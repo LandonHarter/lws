@@ -1,4 +1,5 @@
 const std = @import("std");
+const server = @import("server");
 
 const Config = struct {
     port: u16 = 9324,
@@ -22,9 +23,16 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    std.debug.print("sqs (stub) listening on port {d}, data-dir '{s}'\n", .{ cfg.port, cfg.data_dir });
+    std.debug.print("sqs listening on port {d}, data-dir '{s}'\n", .{ cfg.port, cfg.data_dir });
 
-    while (true) {
-        try std.Io.sleep(init.io, .fromSeconds(3600), .awake);
+    var srv = try server.Server.init(init.io, init.gpa, .{ .port = cfg.port });
+    defer srv.deinit();
+
+    try srv.run(handle, &cfg);
+}
+
+fn handle(ctx: *server.Context) !void {
+    if (ctx.method() == .GET and std.mem.eql(u8, ctx.path(), "/health")) {
+        return ctx.json(.ok, "{\"status\":\"ok\"}");
     }
 }

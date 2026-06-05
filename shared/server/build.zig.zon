@@ -1,11 +1,9 @@
 .{
-    .name = .sqs,
+    .name = .server,
     .version = "0.0.0",
-    .fingerprint = 0x56de672a247b4997,
+    .fingerprint = 0x5a6dd5f62151877b,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{
-        .server = .{ .path = "../../shared/server" },
-    },
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

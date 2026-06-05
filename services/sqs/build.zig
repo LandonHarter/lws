@@ -13,6 +13,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const server_dep = b.dependency("server", .{ .target = target, .optimize = optimize });
+    exe.root_module.addImport("server", server_dep.module("server"));
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the sqs service");
