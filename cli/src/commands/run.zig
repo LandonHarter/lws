@@ -3,6 +3,7 @@ const zli = @import("zli");
 
 const services = @import("../services.zig");
 const root_dir = @import("../core/root_dir.zig");
+const namegen = @import("../core/namegen.zig");
 
 const port_flag = zli.Flag{
     .name = "port",
@@ -12,6 +13,14 @@ const port_flag = zli.Flag{
     .default_value = .{ .Int = 0 },
 };
 
+const name_flag = zli.Flag{
+    .name = "name",
+    .shortcut = "n",
+    .description = "Instance name (defaults to a generated name); data lives in .lws/<service>/<name>",
+    .type = .String,
+    .default_value = .{ .String = "" },
+};
+
 pub fn register(init_options: zli.InitOptions) !*zli.Command {
     const cmd = try zli.Command.init(init_options, .{
         .name = "run",
@@ -19,6 +28,7 @@ pub fn register(init_options: zli.InitOptions) !*zli.Command {
     }, run);
 
     try cmd.addFlag(port_flag);
+    try cmd.addFlag(name_flag);
     try cmd.addPositionalArg(.{
         .name = "service",
         .description = "Name of the service to run",
@@ -46,13 +56,17 @@ fn run(ctx: zli.CommandContext) !void {
     const port_flag_val = ctx.flag("port", i32);
     const port: u16 = if (port_flag_val == 0) spec.default_port else @intCast(port_flag_val);
 
+    const name_flag_val = ctx.flag("name", []const u8);
+    const instance = if (name_flag_val.len == 0) try namegen.generate(allocator, io) else name_flag_val;
+    defer if (name_flag_val.len == 0) allocator.free(instance);
+
     const root = try root_dir.find(allocator, io);
     defer allocator.free(root);
 
     const service_dir = try std.fs.path.join(allocator, &.{ root, spec.dir });
     defer allocator.free(service_dir);
 
-    const data_dir = try std.fs.path.join(allocator, &.{ root, ".lws", spec.name });
+    const data_dir = try std.fs.path.join(allocator, &.{ root, ".lws", spec.name, instance });
     defer allocator.free(data_dir);
 
     const bin_path = try std.fs.path.join(allocator, &.{ service_dir, "zig-out", "bin", spec.bin });
@@ -65,7 +79,7 @@ fn run(ctx: zli.CommandContext) !void {
     const port_str = try std.fmt.allocPrint(allocator, "{d}", .{port});
     defer allocator.free(port_str);
 
-    try out.print("starting {s} on port {d}\n", .{ spec.name, port });
+    try out.print("starting {s} instance '{s}' on port {d}\n", .{ spec.name, instance, port });
     try out.flush();
     try spawnAndWait(io, &.{ bin_path, "--port", port_str, "--data-dir", data_dir }, .inherit);
 }
