@@ -23,4 +23,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     std.debug.print("sqs (stub) listening on port {d}, data-dir '{s}'\n", .{ cfg.port, cfg.data_dir });
+
+    while (true) {
+        try std.Io.sleep(init.io, .fromSeconds(3600), .awake);
+    }
 }

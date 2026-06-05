@@ -4,6 +4,7 @@ const zli = @import("zli");
 const services = @import("../services.zig");
 const root_dir = @import("../core/root_dir.zig");
 const namegen = @import("../core/namegen.zig");
+const instances = @import("../core/instances.zig");
 
 const port_flag = zli.Flag{
     .name = "port",
@@ -63,6 +64,11 @@ fn run(ctx: zli.CommandContext) !void {
     const root = try root_dir.find(allocator, io);
     defer allocator.free(root);
 
+    if (try instanceAlive(allocator, io, root, spec.name, instance)) {
+        try out.print("instance '{s}' of {s} already running\n", .{ instance, spec.name });
+        return;
+    }
+
     const service_dir = try std.fs.path.join(allocator, &.{ root, spec.dir });
     defer allocator.free(service_dir);
 
@@ -76,12 +82,42 @@ fn run(ctx: zli.CommandContext) !void {
     try out.flush();
     try spawnAndWait(io, &.{ "zig", "build" }, .{ .path = service_dir });
 
+    try std.Io.Dir.createDirPath(.cwd(), io, data_dir);
+
+    const log_path = try std.fs.path.join(allocator, &.{ data_dir, "output.log" });
+    defer allocator.free(log_path);
+
     const port_str = try std.fmt.allocPrint(allocator, "{d}", .{port});
     defer allocator.free(port_str);
 
-    try out.print("starting {s} instance '{s}' on port {d}\n", .{ spec.name, instance, port });
-    try out.flush();
-    try spawnAndWait(io, &.{ bin_path, "--port", port_str, "--data-dir", data_dir }, .inherit);
+    const log_file = try std.Io.Dir.createFileAbsolute(io, log_path, .{});
+    defer log_file.close(io);
+
+    const child = try std.process.spawn(io, .{
+        .argv = &.{ bin_path, "--port", port_str, "--data-dir", data_dir },
+        .cwd = .inherit,
+        .stdin = .ignore,
+        .stdout = .{ .file = log_file },
+        .stderr = .{ .file = log_file },
+        .pgid = 0,
+    });
+    const pid = child.id orelse return error.SpawnFailed;
+
+    try instances.write(allocator, io, root, spec.name, instance, pid, port);
+
+    try out.print("started {s} instance '{s}' (pid {d}) on port {d}\n", .{ spec.name, instance, pid, port });
+    try out.print("logs: {s}\n", .{log_path});
+}
+
+fn instanceAlive(allocator: std.mem.Allocator, io: std.Io, root: []const u8, service: []const u8, name: []const u8) !bool {
+    const list = try instances.list(allocator, io, root);
+    defer instances.freeList(allocator, list);
+    for (list) |inst| {
+        if (std.mem.eql(u8, inst.service, service) and std.mem.eql(u8, inst.name, name)) {
+            return instances.alive(inst.pid);
+        }
+    }
+    return false;
 }
 
 fn spawnAndWait(io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd) !void {
