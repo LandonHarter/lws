@@ -1,14 +1,17 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Activity, ChevronRight } from "lucide-react";
+import { Activity, ChevronRight, Plus } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
 import { usePoll } from "@/lib/use-poll";
 import { fmtNum, fmtUptime } from "@/lib/format";
 import { aggregateStats, serviceMeta } from "@/lib/services";
+import { serviceConfigSpec } from "@/lib/service-config";
 import { cn } from "@/lib/utils";
 import { MetricTile, SectionLabel, StatusDot } from "@/components/bits";
+import { buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -30,6 +33,7 @@ export function ServiceIndex({ service }: { service: string }) {
   const running = instances.filter((i) => i.status === "running").length;
   const summary = aggregateStats(service, instances);
   const statCols = summary.map((s) => s.label);
+  const canCreate = serviceConfigSpec(service) !== null;
 
   return (
     <div className="space-y-8">
@@ -43,6 +47,12 @@ export function ServiceIndex({ service }: { service: string }) {
             {meta.label}
           </h1>
         </div>
+        {canCreate && (
+          <Link href={`/${service}/new`} className={cn(buttonVariants(), "ml-auto self-end")}>
+            <Plus className="size-4" />
+            New instance
+          </Link>
+        )}
       </div>
 
       <div

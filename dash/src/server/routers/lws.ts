@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 
@@ -175,15 +178,30 @@ export const lwsRouter = router({
         port: z.number().int().positive().optional(),
         name: z.string().min(1).optional(),
         config: z.string().min(1).optional(),
+        configJson: z.string().min(1).optional(),
       }),
     )
     .mutation(async ({ input }) => {
       const args = ["run", input.service];
       if (input.port !== undefined) args.push("--port", String(input.port));
       if (input.name !== undefined) args.push("--name", input.name);
-      if (input.config !== undefined) args.push("--config", input.config);
+
+      let tmpDir: string | null = null;
+      if (input.configJson !== undefined) {
+        tmpDir = await mkdtemp(join(tmpdir(), "lws-config-"));
+        const configPath = join(tmpDir, `${input.service}.json`);
+        await writeFile(configPath, input.configJson, "utf8");
+        args.push("--config", configPath);
+      } else if (input.config !== undefined) {
+        args.push("--config", input.config);
+      }
 
       const { stdout, stderr } = await lws(args);
+
+      if (tmpDir) {
+        const dir = tmpDir;
+        setTimeout(() => void rm(dir, { recursive: true, force: true }), 30_000);
+      }
 
       const started = /started (\S+) instance '([^']+)' \(pid (\d+)\) on port (\d+)/.exec(stdout);
       const logMatch = /logs: (.+)/.exec(stdout);
