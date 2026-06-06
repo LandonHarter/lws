@@ -6,6 +6,7 @@
     .dependencies = .{
         .server = .{ .path = "../../shared/server" },
         .config = .{ .path = "../../shared/config" },
+        .core = .{ .path = "../../shared/core" },
     },
     .paths = .{
         "build.zig",

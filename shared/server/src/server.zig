@@ -40,8 +40,30 @@ pub const Server = struct {
                 error.ConnectionAborted, error.WouldBlock => continue,
                 else => return err,
             };
-            self.handleConnection(stream, handler, user) catch {};
+            const args = self.gpa.create(ConnArgs) catch {
+                self.handleConnection(stream, handler, user) catch {};
+                continue;
+            };
+            args.* = .{ .self = self, .stream = stream, .handler = handler, .user = user };
+            const t = std.Thread.spawn(.{}, runConn, .{args}) catch {
+                self.handleConnection(stream, handler, user) catch {};
+                self.gpa.destroy(args);
+                continue;
+            };
+            t.detach();
         }
+    }
+
+    const ConnArgs = struct {
+        self: *Server,
+        stream: net.Stream,
+        handler: Handler,
+        user: ?*anyopaque,
+    };
+
+    fn runConn(args: *ConnArgs) void {
+        defer args.self.gpa.destroy(args);
+        args.self.handleConnection(args.stream, args.handler, args.user) catch {};
     }
 
     fn handleConnection(self: *Server, stream: net.Stream, handler: Handler, user: ?*anyopaque) !void {

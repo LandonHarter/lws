@@ -2,7 +2,7 @@ const std = @import("std");
 const config = @import("config");
 const attrs = @import("attrs.zig");
 
-pub const Queue = struct {
+pub const QueueConfig = struct {
     kind: config.QueueKind,
     attributes: std.StringArrayHashMapUnmanaged(config.Value),
 };
@@ -17,12 +17,12 @@ pub fn writeDefaults(kind: config.QueueKind, w: *std.Io.Writer) !void {
     try config.writeDefaults(&attrs.queue_attrs, kind, w);
 }
 
-pub fn loadFile(arena: std.mem.Allocator, io: std.Io, path: []const u8) LoadError!Queue {
+pub fn loadFile(arena: std.mem.Allocator, io: std.Io, path: []const u8) LoadError!QueueConfig {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, std.Io.Limit.limited(max_config_bytes));
     return loadBytes(arena, bytes);
 }
 
-pub fn loadBytes(arena: std.mem.Allocator, bytes: []const u8) LoadError!Queue {
+pub fn loadBytes(arena: std.mem.Allocator, bytes: []const u8) LoadError!QueueConfig {
     const root = try std.json.parseFromSliceLeaky(std.json.Value, arena, bytes, .{});
     if (root != .object) {
         std.debug.print("sqs config: top-level value must be an object of attributes\n", .{});
