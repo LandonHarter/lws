@@ -5,6 +5,7 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .server = .{ .path = "../../shared/server" },
+        .config = .{ .path = "../../shared/config" },
     },
     .paths = .{
         "build.zig",

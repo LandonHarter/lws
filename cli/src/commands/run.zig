@@ -22,6 +22,14 @@ const name_flag = zli.Flag{
     .default_value = .{ .String = "" },
 };
 
+const config_flag = zli.Flag{
+    .name = "config",
+    .shortcut = "c",
+    .description = "Path to a JSON config file for the service (resolved relative to the current directory)",
+    .type = .String,
+    .default_value = .{ .String = "" },
+};
+
 pub fn register(init_options: zli.InitOptions) !*zli.Command {
     const cmd = try zli.Command.init(init_options, .{
         .name = "run",
@@ -30,6 +38,7 @@ pub fn register(init_options: zli.InitOptions) !*zli.Command {
 
     try cmd.addFlag(port_flag);
     try cmd.addFlag(name_flag);
+    try cmd.addFlag(config_flag);
     try cmd.addPositionalArg(.{
         .name = "service",
         .description = "Name of the service to run",
@@ -60,6 +69,8 @@ fn run(ctx: zli.CommandContext) !void {
     const name_flag_val = ctx.flag("name", []const u8);
     const instance = if (name_flag_val.len == 0) try namegen.generate(allocator, io) else name_flag_val;
     defer if (name_flag_val.len == 0) allocator.free(instance);
+
+    const config_path = ctx.flag("config", []const u8);
 
     const root = try root_dir.find(allocator, io);
     defer allocator.free(root);
@@ -93,8 +104,15 @@ fn run(ctx: zli.CommandContext) !void {
     const log_file = try std.Io.Dir.createFileAbsolute(io, log_path, .{});
     defer log_file.close(io);
 
+    var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.appendSlice(allocator, &.{ bin_path, "--port", port_str, "--data-dir", data_dir });
+    if (config_path.len > 0) {
+        try argv.appendSlice(allocator, &.{ "--config", config_path });
+    }
+
     const child = try std.process.spawn(io, .{
-        .argv = &.{ bin_path, "--port", port_str, "--data-dir", data_dir },
+        .argv = argv.items,
         .cwd = .inherit,
         .stdin = .ignore,
         .stdout = .{ .file = log_file },
