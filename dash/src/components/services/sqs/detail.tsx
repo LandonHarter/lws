@@ -2,10 +2,11 @@
 
 import { Eye, Layers, Send, Sigma, Timer } from "lucide-react";
 
-import { fmtNum, fmtTime } from "@/lib/format";
-import { aggregateStats, serviceMeta, sqsStatsSchema } from "@/lib/services";
+import { fmtNum } from "@/lib/format";
+import { sqsStatsSchema } from "@/lib/services";
 import { cn } from "@/lib/utils";
 import { DistributionBar, Legend, MetricTile, SectionLabel } from "@/components/bits";
+import { SyncStamp } from "@/components/services/shared";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import {
@@ -17,17 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type DetailProps = { service: string; stats: unknown; updatedAt: number | null };
-
-function SyncStamp({ updatedAt }: { updatedAt: number | null }) {
-  return (
-    <span className="font-mono text-[11px] text-muted-foreground">
-      {updatedAt ? `synced ${fmtTime(updatedAt)}` : "syncing"}
-    </span>
-  );
-}
-
-function SqsDetail({ stats, updatedAt }: { stats: unknown; updatedAt: number | null }) {
+export function SqsDetail({ stats, updatedAt }: { stats: unknown; updatedAt: number | null }) {
   const parsed = sqsStatsSchema.safeParse(stats);
   if (!parsed.success) {
     return (
@@ -130,48 +121,4 @@ function SqsDetail({ stats, updatedAt }: { stats: unknown; updatedAt: number | n
       </div>
     </>
   );
-}
-
-function GenericDetail({ service, stats, updatedAt }: DetailProps) {
-  const tiles = aggregateStats(service, [{ stats }]);
-  const json = stats ? JSON.stringify(stats, null, 2) : null;
-
-  return (
-    <>
-      {tiles.length > 0 && (
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {tiles.map((t) => (
-            <MetricTile key={t.key} label={t.label} value={t.value} icon={t.icon} tone={t.tone} />
-          ))}
-        </div>
-      )}
-
-      <div className="space-y-4">
-        <div className="flex items-end justify-between">
-          <SectionLabel>Stats</SectionLabel>
-          <SyncStamp updatedAt={updatedAt} />
-        </div>
-        <Card className="overflow-hidden rounded-lg border-border bg-card/70 p-0 ring-0">
-          {json ? (
-            <pre className="overflow-x-auto px-5 py-4 font-mono text-[13px] leading-relaxed text-muted-foreground">
-              {json}
-            </pre>
-          ) : (
-            <div className="px-6 py-16 text-center font-mono text-sm text-muted-foreground">
-              no stats reported
-            </div>
-          )}
-        </Card>
-      </div>
-    </>
-  );
-}
-
-export function ServiceDetail(props: DetailProps) {
-  switch (serviceMeta(props.service).id) {
-    case "sqs":
-      return <SqsDetail stats={props.stats} updatedAt={props.updatedAt} />;
-    default:
-      return <GenericDetail {...props} />;
-  }
 }

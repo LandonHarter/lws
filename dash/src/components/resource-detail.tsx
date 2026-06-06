@@ -11,7 +11,7 @@ import { serviceMeta } from "@/lib/services";
 import { cn } from "@/lib/utils";
 import { SectionLabel, StatusDot } from "@/components/bits";
 import { InstanceActions } from "@/components/instance-actions";
-import { ServiceDetail } from "@/components/service-views";
+import { ServiceDetail } from "@/components/services";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
