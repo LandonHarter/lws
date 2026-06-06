@@ -49,6 +49,17 @@ pub fn build(b: *std.Build) void {
     registry_tests.root_module.addImport("core", core_dep.module("core"));
     test_step.dependOn(&b.addRunArtifact(registry_tests).step);
 
+    const wire_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wire_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    wire_tests.root_module.addImport("server", server_dep.module("server"));
+    wire_tests.root_module.addImport("core", core_dep.module("core"));
+    test_step.dependOn(&b.addRunArtifact(wire_tests).step);
+
     const run_step = b.step("run", "Run the s3 service");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
