@@ -7,6 +7,15 @@ pub const Kind = config.QueueKind;
 pub const AttrMap = std.StringArrayHashMapUnmanaged(config.Value);
 pub const TagMap = std.StringArrayHashMapUnmanaged([]const u8);
 
+pub const StoreVTable = struct {
+    purge: *const fn (ctx: *anyopaque) anyerror!void,
+    count_visible: *const fn (ctx: *anyopaque) u64,
+    count_in_flight: *const fn (ctx: *anyopaque) u64,
+    count_delayed: *const fn (ctx: *anyopaque) u64,
+};
+
+pub const Store = struct { ctx: *anyopaque, vtable: *const StoreVTable };
+
 pub const Queue = struct {
     id: [16]u8,
     name: []const u8,
@@ -17,6 +26,8 @@ pub const Queue = struct {
     last_modified_at: i64,
     arena: *std.heap.ArenaAllocator,
     mutex: std.Io.Mutex = .init,
+    store: ?Store = null,
+    last_purge_at: ?i64 = null,
 };
 
 pub const NameError = error{InvalidQueueName};
@@ -40,7 +51,7 @@ pub fn deriveKind(raw_attrs: *const TagMap) Kind {
     return .standard;
 }
 
-fn dupeValue(arena: std.mem.Allocator, v: config.Value) !config.Value {
+pub fn dupeValue(arena: std.mem.Allocator, v: config.Value) !config.Value {
     return switch (v) {
         .integer => |n| .{ .integer = n },
         .boolean => |b| .{ .boolean = b },

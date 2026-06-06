@@ -1,10 +1,12 @@
 const std = @import("std");
 const queue = @import("queue.zig");
 const config = @import("config");
+const attrs = @import("attrs.zig");
 const queue_dir = @import("persist/queue_dir.zig");
 const time = @import("core").time;
 
 pub const CooldownSeconds: i64 = 60;
+pub const PurgeCooldownSeconds: i64 = 60;
 
 pub const Registry = struct {
     gpa: std.mem.Allocator,
@@ -136,6 +138,102 @@ pub const Registry = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         return self.queues_by_name.get(name);
+    }
+
+    // Validates each (name,value) with op=.update against the queue kind, then
+    // applies them all and rewrites meta.json. Validation is atomic: a single
+    // bad attr aborts before any mutation.
+    pub fn setAttributes(self: *Registry, name: []const u8, raw_attrs: *const queue.TagMap) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const q = self.queues_by_name.get(name) orelse return error.QueueDoesNotExist;
+        q.mutex.lockUncancelable(self.io);
+        defer q.mutex.unlock(self.io);
+
+        var vit = raw_attrs.iterator();
+        while (vit.next()) |e| {
+            _ = try config.validateOne(&attrs.queue_attrs, .update, q.kind, e.key_ptr.*, e.value_ptr.*);
+        }
+
+        const a = q.arena.allocator();
+        var ait = raw_attrs.iterator();
+        while (ait.next()) |e| {
+            const resolved = try config.validateOne(&attrs.queue_attrs, .update, q.kind, e.key_ptr.*, e.value_ptr.*);
+            const dup = try queue.dupeValue(a, resolved);
+            if (q.attributes.getPtr(e.key_ptr.*)) |slot| {
+                slot.* = dup;
+            } else {
+                try q.attributes.put(a, try a.dupe(u8, e.key_ptr.*), dup);
+            }
+        }
+
+        const now = self.clock.nowSec();
+        q.last_modified_at = now;
+
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const sa = scratch.allocator();
+        const dir = try queue_dir.dirPath(sa, self.data_dir, q.id);
+        try queue_dir.writeMeta(sa, self.io, dir, .{
+            .queue_id = q.id,
+            .name = q.name,
+            .kind = q.kind,
+            .attributes = q.attributes,
+            .tags = q.tags,
+            .created_at = q.created_at,
+            .last_modified_at = now,
+        }, self.fsync);
+    }
+
+    pub fn purge(self: *Registry, name: []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const q = self.queues_by_name.get(name) orelse return error.QueueDoesNotExist;
+        const now = self.clock.nowSec();
+        if (q.last_purge_at) |last| {
+            if (now - last < PurgeCooldownSeconds) return error.PurgeInProgress;
+        }
+        q.last_purge_at = now;
+        if (q.store) |s| try s.vtable.purge(s.ctx);
+    }
+
+    // Names of queues whose RedrivePolicy.deadLetterTargetArn matches target_arn,
+    // sorted, duped into gpa_out. Malformed RedrivePolicy JSON is skipped silently.
+    pub fn dlqSourceNames(self: *Registry, gpa_out: std.mem.Allocator, target_arn: []const u8) ![][]const u8 {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        var out: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (out.items) |n| gpa_out.free(n);
+            out.deinit(gpa_out);
+        }
+
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+
+        for (self.queues_by_name.keys(), self.queues_by_name.values()) |name, q| {
+            const rp = q.attributes.get("RedrivePolicy") orelse continue;
+            const json_str = switch (rp) {
+                .json => |j| j,
+                .string => |s| s,
+                else => continue,
+            };
+            _ = scratch.reset(.retain_capacity);
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), json_str, .{}) catch continue;
+            if (parsed != .object) continue;
+            const arn_v = parsed.object.get("deadLetterTargetArn") orelse continue;
+            if (arn_v != .string) continue;
+            if (std.mem.eql(u8, arn_v.string, target_arn)) {
+                try out.append(gpa_out, try gpa_out.dupe(u8, name));
+            }
+        }
+
+        const slice = try out.toOwnedSlice(gpa_out);
+        std.mem.sort([]const u8, slice, {}, lessThanStr);
+        return slice;
     }
 
     // Returns sorted names matching `prefix`, duped into `gpa_out`.
@@ -415,4 +513,142 @@ test "listNames sorted and prefix filtered" {
         testing.allocator.free(fo);
     }
     try testing.expectEqual(@as(usize, 2), fo.len);
+}
+
+test "setAttributes updates value and rejects illegal" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [64]u8 = undefined;
+    const data_dir = tmpDataDir(&dbuf, &tmp);
+
+    var prng = std.Random.DefaultPrng.init(20);
+    var reg = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng);
+    defer reg.deinit();
+
+    var raw: queue.TagMap = .empty;
+    defer raw.deinit(testing.allocator);
+    var tags: queue.TagMap = .empty;
+    defer tags.deinit(testing.allocator);
+    _ = try reg.create("x", &raw, &tags);
+
+    var upd: queue.TagMap = .empty;
+    defer upd.deinit(testing.allocator);
+    try upd.put(testing.allocator, "VisibilityTimeout", "120");
+    try reg.setAttributes("x", &upd);
+    try testing.expectEqual(@as(i64, 120), reg.get("x").?.attributes.get("VisibilityTimeout").?.integer);
+
+    // create-only on update -> InvalidAttributeName
+    var bad_name: queue.TagMap = .empty;
+    defer bad_name.deinit(testing.allocator);
+    try bad_name.put(testing.allocator, "FifoQueue", "true");
+    try testing.expectError(config.Error.InvalidAttributeName, reg.setAttributes("x", &bad_name));
+
+    // out of range -> InvalidAttributeValue, and nothing applied (atomic)
+    var bad_val: queue.TagMap = .empty;
+    defer bad_val.deinit(testing.allocator);
+    try bad_val.put(testing.allocator, "DelaySeconds", "5");
+    try bad_val.put(testing.allocator, "VisibilityTimeout", "99999");
+    try testing.expectError(config.Error.InvalidAttributeValue, reg.setAttributes("x", &bad_val));
+    try testing.expectEqual(@as(i64, 0), reg.get("x").?.attributes.get("DelaySeconds").?.integer);
+}
+
+test "setAttributes survives recover" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [64]u8 = undefined;
+    const data_dir = tmpDataDir(&dbuf, &tmp);
+
+    var raw: queue.TagMap = .empty;
+    defer raw.deinit(testing.allocator);
+    var tags: queue.TagMap = .empty;
+    defer tags.deinit(testing.allocator);
+
+    {
+        var prng = std.Random.DefaultPrng.init(21);
+        var reg = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng);
+        defer reg.deinit();
+        _ = try reg.create("x", &raw, &tags);
+        var upd: queue.TagMap = .empty;
+        defer upd.deinit(testing.allocator);
+        try upd.put(testing.allocator, "VisibilityTimeout", "120");
+        try reg.setAttributes("x", &upd);
+    }
+
+    var prng2 = std.Random.DefaultPrng.init(22);
+    var reg2 = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng2);
+    defer reg2.deinit();
+    try reg2.recover();
+    try testing.expectEqual(@as(i64, 120), reg2.get("x").?.attributes.get("VisibilityTimeout").?.integer);
+}
+
+test "purge cooldown" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [64]u8 = undefined;
+    const data_dir = tmpDataDir(&dbuf, &tmp);
+
+    var prng = std.Random.DefaultPrng.init(23);
+    var reg = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng);
+    defer reg.deinit();
+
+    var raw: queue.TagMap = .empty;
+    defer raw.deinit(testing.allocator);
+    var tags: queue.TagMap = .empty;
+    defer tags.deinit(testing.allocator);
+    _ = try reg.create("x", &raw, &tags);
+
+    try reg.purge("x");
+    try testing.expectError(error.PurgeInProgress, reg.purge("x"));
+    reg.clock = time.Clock.fixed(1000 + PurgeCooldownSeconds, 0);
+    try reg.purge("x");
+    try testing.expectError(error.QueueDoesNotExist, reg.purge("nope"));
+}
+
+test "dlqSourceNames matches RedrivePolicy target" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [64]u8 = undefined;
+    const data_dir = tmpDataDir(&dbuf, &tmp);
+
+    var prng = std.Random.DefaultPrng.init(24);
+    var reg = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng);
+    defer reg.deinit();
+
+    var tags: queue.TagMap = .empty;
+    defer tags.deinit(testing.allocator);
+
+    var dlq_raw: queue.TagMap = .empty;
+    defer dlq_raw.deinit(testing.allocator);
+    _ = try reg.create("dlq", &dlq_raw, &tags);
+
+    var a_raw: queue.TagMap = .empty;
+    defer a_raw.deinit(testing.allocator);
+    try a_raw.put(testing.allocator, "RedrivePolicy", "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:dlq\",\"maxReceiveCount\":5}");
+    _ = try reg.create("srcA", &a_raw, &tags);
+
+    // malformed RedrivePolicy is skipped, not an error
+    var b_raw: queue.TagMap = .empty;
+    defer b_raw.deinit(testing.allocator);
+    try b_raw.put(testing.allocator, "RedrivePolicy", "not json");
+    _ = try reg.create("srcB", &b_raw, &tags);
+
+    const names = try reg.dlqSourceNames(testing.allocator, "arn:aws:sqs:us-east-1:000000000000:dlq");
+    defer {
+        for (names) |n| testing.allocator.free(n);
+        testing.allocator.free(names);
+    }
+    try testing.expectEqual(@as(usize, 1), names.len);
+    try testing.expectEqualStrings("srcA", names[0]);
 }
