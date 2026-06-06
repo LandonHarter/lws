@@ -8,6 +8,7 @@ pub const AttrMap = std.StringArrayHashMapUnmanaged(config.Value);
 pub const TagMap = std.StringArrayHashMapUnmanaged([]const u8);
 
 pub const StoreVTable = struct {
+    deinit: *const fn (ctx: *anyopaque) void,
     purge: *const fn (ctx: *anyopaque) anyerror!void,
     count_visible: *const fn (ctx: *anyopaque) u64,
     count_in_flight: *const fn (ctx: *anyopaque) u64,

@@ -84,6 +84,16 @@ pub fn build(b: *std.Build) void {
     registry_tests.root_module.addImport("config", config_dep.module("config"));
     registry_tests.root_module.addImport("core", core_dep.module("core"));
 
+    const store_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/store_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    store_tests.root_module.addImport("config", config_dep.module("config"));
+    store_tests.root_module.addImport("core", core_dep.module("core"));
+
     const wire_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/wire_test.zig"),
@@ -102,6 +112,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(runtime_tests).step);
     test_step.dependOn(&b.addRunArtifact(queue_value_tests).step);
     test_step.dependOn(&b.addRunArtifact(registry_tests).step);
+    test_step.dependOn(&b.addRunArtifact(store_tests).step);
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
 
     const module_test_files = [_][]const u8{

@@ -8,6 +8,8 @@ const dispatch = @import("wire/dispatch.zig");
 const registry_mod = @import("registry.zig");
 const queue_lifecycle = @import("handlers/queue_lifecycle.zig");
 const queue_attrs = @import("handlers/queue_attrs.zig");
+const messages = @import("handlers/messages.zig");
+const Ticker = @import("ticker.zig").Ticker;
 
 const Config = struct {
     port: u16 = 9324,
@@ -111,6 +113,7 @@ pub fn main(init: std.process.Init) !void {
     try dispatch.table.register(init.gpa, "Echo", dispatch.echo);
     try queue_lifecycle.register(init.gpa);
     try queue_attrs.register(init.gpa);
+    try messages.register(init.gpa);
 
     if (cfg.config_path.len > 0) {
         const loaded = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);
@@ -135,6 +138,10 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("sqs: pre-seeded queue '{s}' ({s})\n", .{ name, @tagName(loaded.kind) });
         }
     }
+
+    var ticker: Ticker = .{ .rt = &rt };
+    try ticker.start();
+    defer ticker.stop();
 
     var srv = try server.Server.init(init.io, init.gpa, .{ .port = cfg.port, .host = cfg.bind });
     defer srv.deinit();

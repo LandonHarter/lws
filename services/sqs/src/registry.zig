@@ -3,6 +3,7 @@ const queue = @import("queue.zig");
 const config = @import("config");
 const attrs = @import("attrs.zig");
 const queue_dir = @import("persist/queue_dir.zig");
+const message_store = @import("store/message_store.zig");
 const time = @import("core").time;
 
 pub const CooldownSeconds: i64 = 60;
@@ -33,9 +34,23 @@ pub const Registry = struct {
     }
 
     fn destroyQueue(gpa: std.mem.Allocator, q: *queue.Queue) void {
+        if (q.store) |s| s.vtable.deinit(s.ctx);
         const arena_ptr = q.arena;
         arena_ptr.deinit();
         gpa.destroy(arena_ptr);
+    }
+
+    // Allocates a MessageStore in the queue's arena, opens its WAL, and (when
+    // recovering an existing queue) replays persisted state. Internal store
+    // heap lives in self.gpa and is freed by Store.deinit on destroyQueue.
+    fn attachStore(self: *Registry, q: *queue.Queue, dir: []const u8, recover_existing: bool) !void {
+        const a = q.arena.allocator();
+        const wal_path = try std.fs.path.join(a, &.{ dir, "messages.log" });
+        const snap_path = try std.fs.path.join(a, &.{ dir, "snapshot.bin" });
+        const sp = try a.create(message_store.Store);
+        sp.* = try message_store.Store.init(self.gpa, self.io, self.clock, q, wal_path, snap_path, self.fsync);
+        if (recover_existing) try sp.recover();
+        q.store = .{ .ctx = sp, .vtable = &message_store.vtable };
     }
 
     pub fn create(self: *Registry, name: []const u8, raw_attrs: *const queue.TagMap, tags: *const queue.TagMap) !*queue.Queue {
@@ -103,6 +118,7 @@ pub const Registry = struct {
 
         try self.queues_by_name.put(self.gpa, name_dup, q);
         keep = true;
+        try self.attachStore(q, dir, false);
         return q;
     }
 
@@ -311,6 +327,7 @@ pub const Registry = struct {
                 .arena = arena_ptr,
             };
             try self.queues_by_name.put(self.gpa, meta.name, q);
+            try self.attachStore(q, dirpath, true);
         }
     }
 };
