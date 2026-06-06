@@ -449,6 +449,7 @@ const ReceiveParams = struct {
     url: []const u8,
     max: u32 = 1,
     visibility_timeout: ?i64 = null,
+    wait_seconds: ?i64 = null,
     attribute_names: []const []const u8 = &.{},
     message_attribute_names: []const []const u8 = &.{},
     attempt_id: ?[]const u8 = null,
@@ -472,6 +473,11 @@ fn parseReceive(req: *const Request) !ReceiveParams {
                 .string => |s| std.fmt.parseInt(i64, s, 10) catch return error.InvalidParamValue,
                 else => return error.InvalidParamValue,
             };
+            if (obj.get("WaitTimeSeconds")) |v| p.wait_seconds = switch (v) {
+                .integer => |n| n,
+                .string => |s| std.fmt.parseInt(i64, s, 10) catch return error.InvalidParamValue,
+                else => return error.InvalidParamValue,
+            };
             p.attribute_names = try jsonStringArray(arena, obj, "AttributeNames");
             p.message_attribute_names = try jsonStringArray(arena, obj, "MessageAttributeNames");
             p.attempt_id = jsonString(obj, "ReceiveRequestAttemptId");
@@ -484,6 +490,9 @@ fn parseReceive(req: *const Request) !ReceiveParams {
             }
             if (try query_proto.getScalar(req.body, arena, "VisibilityTimeout")) |s| {
                 p.visibility_timeout = std.fmt.parseInt(i64, s, 10) catch return error.InvalidParamValue;
+            }
+            if (try query_proto.getScalar(req.body, arena, "WaitTimeSeconds")) |s| {
+                p.wait_seconds = std.fmt.parseInt(i64, s, 10) catch return error.InvalidParamValue;
             }
             p.attribute_names = try query_proto.getIndexedList(req.body, arena, "AttributeName.{i}");
             p.message_attribute_names = try query_proto.getIndexedList(req.body, arena, "MessageAttributeName.{i}");
@@ -539,8 +548,14 @@ fn receiveMessage(rt: *Runtime, req: *const Request) anyerror!Response {
     const vis_sec = p.visibility_timeout orelse intAttr(q, "VisibilityTimeout", 30);
     if (vis_sec < 0 or vis_sec > 43200) return errMsg(rt, req, .invalid_parameter_value, "VisibilityTimeout must be between 0 and 43200.");
 
-    const now = rt.clock.nowMs();
-    const received = try store.receive(arena, p.max, vis_sec * 1000, now, p.attempt_id);
+    if (p.wait_seconds) |w| {
+        if (w < 0 or w > 20) return errMsg(rt, req, .invalid_parameter_value, "WaitTimeSeconds must be between 0 and 20.");
+    }
+    var wait_sec = p.wait_seconds orelse intAttr(q, "ReceiveMessageWaitTimeSeconds", 0);
+    if (wait_sec < 0) wait_sec = 0;
+    if (wait_sec > 20) wait_sec = 20;
+
+    const received = try store.receive(arena, p.max, vis_sec * 1000, @intCast(wait_sec), p.attempt_id);
 
     switch (req.protocol) {
         .json => return jsonOk(try renderReceiveJson(arena, &p, received)),

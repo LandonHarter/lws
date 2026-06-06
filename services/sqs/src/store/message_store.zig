@@ -214,10 +214,27 @@ pub const Store = struct {
 
     // ---- receive ----
 
-    pub fn receive(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8) ![]ReceivedMessage {
+    // Long-polling receive. When `wait_seconds > 0` and nothing is immediately
+    // available, blocks on `self.wait` until a Send/promotion/expiry signals new
+    // work or the deadline elapses. The ticker broadcasts every tick, so an empty
+    // queue still wakes the waiter to re-check its deadline.
+    pub fn receive(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, wait_seconds: u32, attempt_id: ?[]const u8) ![]ReceivedMessage {
+        const deadline_ms = self.clock.nowMs() + @as(i64, wait_seconds) * 1000;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
+        while (true) {
+            const got = try self.tryReceiveLocked(arena, max, visibility_ms, self.clock.nowMs(), attempt_id);
+            if (got.len > 0) return got;
+            if (self.clock.nowMs() >= deadline_ms) return got;
+            // waitUncancelable releases the mutex while parked and re-acquires on wake.
+            self.wait.waitUncancelable(self.io, &self.mutex);
+        }
+    }
+
+    // Caller holds the mutex. Pulls up to `max` immediately-visible messages into
+    // in-flight leases; returns an empty slice when nothing is available.
+    fn tryReceiveLocked(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8) ![]ReceivedMessage {
         if (self.fifo) |fs| return self.receiveFifo(fs, arena, max, visibility_ms, now_ms, attempt_id);
 
         var out: std.ArrayList(ReceivedMessage) = .empty;
@@ -292,11 +309,15 @@ pub const Store = struct {
             try records.append(self.gpa, .{ .msg_seq = msg.seq, .lease_nonce = nonce, .visible_at_ms = visible_at });
         }
 
-        if (out.items.len > 0) self.afterWrite();
-        if (attempt_id) |aid| {
-            const slice = try records.toOwnedSlice(self.gpa);
-            errdefer self.gpa.free(slice);
-            try fs.cacheReceive(aid, now_ms, slice);
+        if (out.items.len > 0) {
+            self.afterWrite();
+            // Only cache a non-empty batch: caching an empty result would make a
+            // long-poll retry (same attempt_id) replay empty forever.
+            if (attempt_id) |aid| {
+                const slice = try records.toOwnedSlice(self.gpa);
+                errdefer self.gpa.free(slice);
+                try fs.cacheReceive(aid, now_ms, slice);
+            }
         }
         return out.toOwnedSlice(arena);
     }
@@ -331,7 +352,11 @@ pub const Store = struct {
         _ = self.inflight.swapRemove(msg_seq);
         try self.appendDeleteLease(msg_seq, nonce);
         self.afterWrite();
-        if (self.fifo) |fs| fifoUnblock(fs, entry.msg);
+        if (self.fifo) |fs| {
+            fifoUnblock(fs, entry.msg);
+            // Deleting a FIFO head's lease unblocks its group; wake a waiter.
+            self.wait.signal(self.io);
+        }
         entry.msg.destroy(self.gpa);
     }
 
@@ -407,10 +432,10 @@ pub const Store = struct {
 
         self.dropRetention(now_ms);
 
-        if (promoted) {
-            self.afterWriteLocked();
-            self.wait.signal(self.io);
-        }
+        if (promoted) self.afterWriteLocked();
+        // Broadcast every tick (cheap when no waiters): wakes long-poll waiters so
+        // they can consume promoted messages or notice their deadline has passed.
+        self.wait.broadcast(self.io);
     }
 
     fn dropRetention(self: *Store, now_ms: i64) void {
@@ -1165,7 +1190,7 @@ test "receive moves to inflight then delete removes" {
     defer store.deinit();
 
     _ = try store.send(try makeMsg(testing.allocator, "hi", 0, 1000));
-    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    const got = try store.receive(env.arena.allocator(), 10, 30_000, 0, null);
     try testing.expectEqual(@as(usize, 1), got.len);
     try testing.expectEqual(@as(u64, 0), store.countVisible());
     try testing.expectEqual(@as(u64, 1), store.countInFlight());
@@ -1183,7 +1208,7 @@ test "delete with stale nonce is no-op success" {
     defer store.deinit();
 
     _ = try store.send(try makeMsg(testing.allocator, "hi", 0, 1000));
-    const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000, null);
+    const got = try store.receive(env.arena.allocator(), 1, 30_000, 0, null);
     const h = try receipt.decode(got[0].receipt_handle);
     try store.deleteLease(h.msg_seq, h.lease_nonce + 999); // wrong nonce
     try testing.expectEqual(@as(u64, 1), store.countInFlight()); // still there
@@ -1203,7 +1228,7 @@ test "tick promotes delayed and expired inflight" {
     store.tick(2000);
     try testing.expectEqual(@as(u64, 1), store.countVisible());
 
-    const got = try store.receive(env.arena.allocator(), 1, 30_000, 2000, null);
+    const got = try store.receive(env.arena.allocator(), 1, 30_000, 0, null);
     _ = got;
     try testing.expectEqual(@as(u64, 1), store.countInFlight());
     store.tick(2000 + 30_000); // lease expires
@@ -1230,7 +1255,7 @@ test "recover rebuilds state from WAL" {
         defer store.deinit();
         _ = try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
         _ = try store.send(try makeMsg(testing.allocator, "b", 0, 1000));
-        const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000, null);
+        const got = try store.receive(env.arena.allocator(), 1, 30_000, 0, null);
         const h = try receipt.decode(got[0].receipt_handle);
         try store.deleteLease(h.msg_seq, h.lease_nonce); // delete "a"
     }
@@ -1251,16 +1276,16 @@ test "recover restores receive_count" {
         defer store.deinit();
         _ = try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
         // receive, expire, receive again -> receive_count 2
-        _ = try store.receive(env.arena.allocator(), 1, 1000, 1000, null);
+        _ = try store.receive(env.arena.allocator(), 1, 1000, 0, null);
         store.tick(2001); // expire lease (visible_at=2000)
-        _ = try store.receive(env.arena.allocator(), 1, 1000, 3000, null);
+        _ = try store.receive(env.arena.allocator(), 1, 1000, 0, null);
     }
     var store2 = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 10_000), env.q, env.wal_path, env.snap_path, false);
     defer store2.deinit();
     try store2.recover();
     // lease at vis 4000 already passed by now=10000 -> visible
     try testing.expectEqual(@as(u64, 1), store2.countVisible());
-    const got = try store2.receive(env.arena.allocator(), 1, 1000, 10_000, null);
+    const got = try store2.receive(env.arena.allocator(), 1, 1000, 0, null);
     try testing.expectEqual(@as(u32, 3), got[0].msg.receive_count);
 }
 
@@ -1274,6 +1299,79 @@ test "purge clears all" {
     try store.purge();
     try testing.expectEqual(@as(u64, 0), store.countVisible());
     try testing.expectEqual(@as(u64, 0), store.countDelayed());
+}
+
+// ---- long-poll tests ----
+
+// Drives Store.tick on its own OS thread (mirrors the production ticker) so that
+// blocked long-poll receivers get woken to re-check their deadline.
+const TickHelper = struct {
+    store: *Store,
+    io: std.Io,
+    clock: time_mod.Clock,
+    stop: std.atomic.Value(bool) = .init(false),
+    thread: ?std.Thread = null,
+
+    fn run(self: *TickHelper) void {
+        while (!self.stop.load(.acquire)) {
+            self.store.tick(self.clock.nowMs());
+            std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(5), .awake) catch {};
+        }
+    }
+    fn start(self: *TickHelper) !void {
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+    }
+    fn stopJoin(self: *TickHelper) void {
+        self.stop.store(true, .release);
+        if (self.thread) |t| t.join();
+    }
+};
+
+test "receive long-poll times out on empty queue" {
+    var env = try TestEnv.init(345_600);
+    defer env.deinit();
+    const clock = time_mod.Clock.real(env.io);
+    var store = try Store.init(testing.allocator, env.io, clock, env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    var helper = TickHelper{ .store = &store, .io = env.io, .clock = clock };
+    try helper.start();
+    defer helper.stopJoin();
+
+    const t0 = clock.nowMs();
+    const got = try store.receive(env.arena.allocator(), 1, 30_000, 1, null);
+    const elapsed = clock.nowMs() - t0;
+    try testing.expectEqual(@as(usize, 0), got.len);
+    try testing.expect(elapsed >= 950 and elapsed <= 2000);
+}
+
+test "receive long-poll wakes on concurrent send" {
+    var env = try TestEnv.init(345_600);
+    defer env.deinit();
+    const clock = time_mod.Clock.real(env.io);
+    var store = try Store.init(testing.allocator, env.io, clock, env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    var helper = TickHelper{ .store = &store, .io = env.io, .clock = clock };
+    try helper.start();
+    defer helper.stopJoin();
+
+    const Sender = struct {
+        fn run(s: *Store, io: std.Io) void {
+            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(200), .awake) catch {};
+            const m = makeMsg(testing.allocator, "x", 0, s.clock.nowMs()) catch return;
+            _ = s.send(m) catch m.destroy(testing.allocator);
+        }
+    };
+    var sender = try std.Thread.spawn(.{}, Sender.run, .{ &store, env.io });
+
+    const t0 = clock.nowMs();
+    const got = try store.receive(env.arena.allocator(), 1, 30_000, 20, null);
+    const elapsed = clock.nowMs() - t0;
+    sender.join();
+
+    try testing.expectEqual(@as(usize, 1), got.len);
+    try testing.expect(elapsed < 5000); // woke well before the 20s deadline
 }
 
 // ---- FIFO tests ----
@@ -1384,7 +1482,7 @@ test "fifo per-group blocking across groups" {
     _ = try store.send(try makeFifoMsg(testing.allocator, 3, "c", "g2", null, 1000));
 
     // max=10 but only g1 head + g2 head delivered (b stays back behind a)
-    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    const got = try store.receive(env.arena.allocator(), 10, 30_000, 0, null);
     try testing.expectEqual(@as(usize, 2), got.len);
     var bodies: [2][]const u8 = .{ got[0].msg.body, got[1].msg.body };
     std.mem.sort([]const u8, &bodies, {}, struct {
@@ -1402,7 +1500,7 @@ test "fifo per-group blocking across groups" {
             try store.deleteLease(h.msg_seq, h.lease_nonce);
         }
     }
-    const got2 = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    const got2 = try store.receive(env.arena.allocator(), 10, 30_000, 0, null);
     try testing.expectEqual(@as(usize, 1), got2.len);
     try testing.expectEqualStrings("b", got2[0].msg.body);
 }
@@ -1418,7 +1516,7 @@ test "fifo strict order within group" {
         _ = try store.send(try makeFifoMsg(testing.allocator, @intCast(i), b, "g1", null, 1000));
     }
     for (bodies) |expected| {
-        const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000, null);
+        const got = try store.receive(env.arena.allocator(), 1, 30_000, 0, null);
         try testing.expectEqual(@as(usize, 1), got.len);
         try testing.expectEqualStrings(expected, got[0].msg.body);
         const h = try receipt.decode(got[0].receipt_handle);
@@ -1435,10 +1533,10 @@ test "fifo expired lease returns to group front in order" {
     _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
     _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g1", null, 1000));
 
-    const got = try store.receive(env.arena.allocator(), 1, 1000, 1000, null); // lease "a" vis 2000
+    const got = try store.receive(env.arena.allocator(), 1, 1000, 0, null); // lease "a" vis 2000
     try testing.expectEqualStrings("a", got[0].msg.body);
     store.tick(2001); // expire -> "a" back at front
-    const got2 = try store.receive(env.arena.allocator(), 1, 30_000, 3000, null);
+    const got2 = try store.receive(env.arena.allocator(), 1, 30_000, 0, null);
     try testing.expectEqualStrings("a", got2[0].msg.body); // still head, order preserved
 }
 
@@ -1451,8 +1549,8 @@ test "fifo receive request attempt id replays batch" {
     _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
     _ = try store.send(try makeFifoMsg(testing.allocator, 2, "c", "g2", null, 1000));
 
-    const first = try store.receive(env.arena.allocator(), 10, 30_000, 1000, "attempt-1");
-    const replay = try store.receive(env.arena.allocator(), 10, 30_000, 1000, "attempt-1");
+    const first = try store.receive(env.arena.allocator(), 10, 30_000, 0, "attempt-1");
+    const replay = try store.receive(env.arena.allocator(), 10, 30_000, 0, "attempt-1");
     try testing.expectEqual(first.len, replay.len);
     for (first, replay) |f, r| {
         try testing.expectEqualSlices(u8, &f.msg.id, &r.msg.id);
@@ -1460,7 +1558,7 @@ test "fifo receive request attempt id replays batch" {
     }
 
     // different attempt id, but groups are blocked -> empty batch
-    const other = try store.receive(env.arena.allocator(), 10, 30_000, 1000, "attempt-2");
+    const other = try store.receive(env.arena.allocator(), 10, 30_000, 0, "attempt-2");
     try testing.expectEqual(@as(usize, 0), other.len);
 }
 
@@ -1477,7 +1575,7 @@ test "fifo per message group throughput allows parallel groups" {
 
     _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
     _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g2", null, 1000));
-    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    const got = try store.receive(env.arena.allocator(), 10, 30_000, 0, null);
     try testing.expectEqual(@as(usize, 2), got.len); // both groups in flight
 }
 
@@ -1491,7 +1589,7 @@ test "fifo recover rebuilds groups dedup and inflight" {
         _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g1", null, 1000));
         _ = try store.send(try makeFifoMsg(testing.allocator, 3, "c", "g2", null, 1000));
         // lease g1 head so it's in flight at restart
-        _ = try store.receive(env.arena.allocator(), 1, 60_000, 1000, null);
+        _ = try store.receive(env.arena.allocator(), 1, 60_000, 0, null);
     }
     var store2 = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 2000), env.q, env.wal_path, env.snap_path, false);
     defer store2.deinit();
@@ -1505,7 +1603,7 @@ test "fifo recover rebuilds groups dedup and inflight" {
     try testing.expect(r.deduplicated);
 
     // g1 is blocked (head "a" in flight); only g2 head "c" deliverable
-    const got = try store2.receive(env.arena.allocator(), 10, 30_000, 2000, null);
+    const got = try store2.receive(env.arena.allocator(), 10, 30_000, 0, null);
     try testing.expectEqual(@as(usize, 1), got.len);
     try testing.expectEqualStrings("c", got[0].msg.body);
 }
