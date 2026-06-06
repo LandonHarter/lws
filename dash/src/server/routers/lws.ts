@@ -1,0 +1,153 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { z } from "zod";
+
+import { publicProcedure, router } from "../trpc";
+
+const exec = promisify(execFile);
+
+const LWS_BIN = process.env.LWS_BIN ?? "/Users/landon/projects/lws/cli/zig-out/bin/cli";
+const LWS_ROOT = process.env.LWS_ROOT ?? "/Users/landon/projects/lws";
+
+type RunResult = {
+  stdout: string;
+  stderr: string;
+};
+
+async function lws(args: string[]): Promise<RunResult> {
+  const { stdout, stderr } = await exec(LWS_BIN, args, {
+    cwd: LWS_ROOT,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return { stdout, stderr };
+}
+
+const instanceSchema = z.object({
+  service: z.string(),
+  name: z.string(),
+  pid: z.number(),
+  port: z.number(),
+  status: z.string(),
+});
+
+type Instance = z.infer<typeof instanceSchema>;
+
+function parseInstances(stdout: string): Instance[] {
+  const lines = stdout.split("\n");
+  const out: Instance[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (trimmed === "no instances") continue;
+    if (trimmed.startsWith("SERVICE")) continue;
+
+    const cols = trimmed.split(/\s+/);
+    if (cols.length < 5) continue;
+
+    const [service, name, pid, port, status] = cols;
+    out.push({
+      service,
+      name,
+      pid: Number.parseInt(pid, 10),
+      port: Number.parseInt(port, 10),
+      status,
+    });
+  }
+  return out;
+}
+
+export const lwsRouter = router({
+  version: publicProcedure.query(async () => {
+    const { stdout, stderr } = await lws(["version"]);
+    return { version: stdout.trim(), stdout, stderr };
+  }),
+
+  list: publicProcedure.query(async () => {
+    const { stdout, stderr } = await lws(["list"]);
+    return { instances: parseInstances(stdout), stdout, stderr };
+  }),
+
+  run: publicProcedure
+    .input(
+      z.object({
+        service: z.string().min(1),
+        port: z.number().int().positive().optional(),
+        name: z.string().min(1).optional(),
+        config: z.string().min(1).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const args = ["run", input.service];
+      if (input.port !== undefined) args.push("--port", String(input.port));
+      if (input.name !== undefined) args.push("--name", input.name);
+      if (input.config !== undefined) args.push("--config", input.config);
+
+      const { stdout, stderr } = await lws(args);
+
+      const started = /started (\S+) instance '([^']+)' \(pid (\d+)\) on port (\d+)/.exec(stdout);
+      const logMatch = /logs: (.+)/.exec(stdout);
+
+      return {
+        stdout,
+        stderr,
+        started: started
+          ? {
+              service: started[1],
+              name: started[2],
+              pid: Number.parseInt(started[3], 10),
+              port: Number.parseInt(started[4], 10),
+            }
+          : null,
+        logPath: logMatch ? logMatch[1].trim() : null,
+      };
+    }),
+
+  kill: publicProcedure
+    .input(
+      z.object({
+        name: z.string().min(1),
+        service: z.string().min(1).optional(),
+        force: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const args = ["kill", input.name];
+      if (input.service !== undefined) args.push("--service", input.service);
+      if (input.force) args.push("--force");
+
+      const { stdout, stderr } = await lws(args);
+      return { stdout, stderr };
+    }),
+
+  logs: publicProcedure
+    .input(
+      z.object({
+        name: z.string().min(1),
+        service: z.string().min(1).optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      const args = ["logs", input.name, "--once"];
+      if (input.service !== undefined) args.push("--service", input.service);
+
+      const { stdout, stderr } = await lws(args);
+      return { logs: stdout, stderr };
+    }),
+
+  config: router({
+    generate: publicProcedure
+      .input(
+        z.object({
+          service: z.string().min(1),
+          output: z.string().min(1).optional(),
+        }),
+      )
+      .mutation(async ({ input }) => {
+        const args = ["config", "generate", input.service];
+        if (input.output !== undefined) args.push("--output", input.output);
+
+        const { stdout, stderr } = await lws(args);
+        return { stdout, stderr };
+      }),
+  }),
+});
