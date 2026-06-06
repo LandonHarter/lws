@@ -5,14 +5,10 @@ const Runtime = @import("../runtime.zig").Runtime;
 const errors = @import("../errors.zig");
 const envelope = @import("envelope.zig");
 const stats = @import("stats.zig");
+const handlers = @import("handlers.zig");
 const Request = envelope.Request;
 
-pub const Response = struct {
-    status: u16 = 200,
-    headers: []const std.http.Header = &.{},
-    body: []const u8,
-    content_type: []const u8 = "application/xml",
-};
+pub const Response = handlers.Response;
 
 // Logical operation a request maps to. Handlers slot in per phase; for now the
 // dispatcher returns NotImplemented for every operation.
@@ -123,10 +119,27 @@ pub fn handleHttp(ctx: *server.Context) !void {
 }
 
 fn dispatch(rt: *Runtime, req: *Request) !Response {
-    _ = rt;
-    // Routing is fully classified; handlers land in later phases.
-    _ = operationFor(req);
-    return notImplemented(req);
+    return switch (operationFor(req)) {
+        .list_buckets => handlers.listBuckets(rt, req),
+        .create_bucket => handlers.createBucket(rt, req),
+        .head_bucket => handlers.headBucket(rt, req),
+        .delete_bucket => handlers.deleteBucket(rt, req),
+        .list_objects_v1 => handlers.listObjects(rt, req, false),
+        .list_objects_v2 => handlers.listObjects(rt, req, true),
+        .delete_objects => handlers.deleteObjects(rt, req),
+        .put_object => handlers.putObject(rt, req),
+        .get_object => handlers.getObject(rt, req),
+        .head_object => handlers.headObject(rt, req),
+        .delete_object => handlers.deleteObject(rt, req),
+        .copy_object => handlers.copyObject(rt, req),
+        .create_multipart => handlers.createMultipart(rt, req),
+        .upload_part => handlers.uploadPart(rt, req),
+        .complete_multipart => handlers.completeMultipart(rt, req),
+        .abort_multipart => handlers.abortMultipart(rt, req),
+        .list_parts => handlers.listParts(rt, req),
+        .list_multipart_uploads => handlers.listMultipartUploads(rt, req),
+        else => notImplemented(req),
+    };
 }
 
 fn notImplemented(req: *const Request) Response {
@@ -135,7 +148,7 @@ fn notImplemented(req: *const Request) Response {
 }
 
 fn renderInternalError(req: *const Request, err: anyerror) Response {
-    _ = err;
+    _ = &err;
     const body = errors.render(req.arena.allocator(), .internal_error, req.bucket, null, &req.request_id) catch "";
     return .{ .status = errors.httpStatus(.internal_error), .body = body };
 }

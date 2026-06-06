@@ -8,4 +8,5 @@ test {
     _ = @import("wire/headers.zig");
     _ = @import("wire/envelope.zig");
     _ = @import("wire/route.zig");
+    _ = @import("wire/handlers.zig");
 }

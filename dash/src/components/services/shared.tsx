@@ -3,7 +3,13 @@
 import { fmtTime } from "@/lib/format";
 import type { ServiceConfigSpec } from "@/lib/service-config";
 
-export type DetailProps = { service: string; stats: unknown; updatedAt: number | null };
+export type DetailProps = {
+  service: string;
+  name: string;
+  port: number | null;
+  stats: unknown;
+  updatedAt: number | null;
+};
 
 export const NAME_RE = /^[A-Za-z0-9_.-]{1,80}$/;
 

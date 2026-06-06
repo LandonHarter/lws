@@ -133,7 +133,13 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
           </p>
         </div>
       ) : (
-        <ServiceDetail service={service} stats={stats} updatedAt={updatedAt} />
+        <ServiceDetail
+          service={service}
+          name={info.name}
+          port={info.port}
+          stats={stats}
+          updatedAt={updatedAt}
+        />
       )}
     </div>
   );

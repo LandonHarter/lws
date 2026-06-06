@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = @import("core").log;
 const time = @import("core").time;
+const Registry = @import("registry.zig").Registry;
 
 pub const LogLevel = log.Level;
 
@@ -16,6 +17,7 @@ pub const Runtime = struct {
     logger: log.Logger = .{},
     rng: std.Random,
     started_at_ms: i64 = 0,
+    registry: *Registry = undefined,
 };
 
 const testing = std.testing;

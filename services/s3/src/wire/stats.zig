@@ -2,6 +2,23 @@ const std = @import("std");
 const server = @import("server");
 const Runtime = @import("../runtime.zig").Runtime;
 
+fn writeJsonString(w: *std.Io.Writer, s: []const u8) !void {
+    try w.writeByte('"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            '\n' => try w.writeAll("\\n"),
+            '\r' => try w.writeAll("\\r"),
+            '\t' => try w.writeAll("\\t"),
+            else => {
+                if (c < 0x20) try w.print("\\u{x:0>4}", .{c}) else try w.writeByte(c);
+            },
+        }
+    }
+    try w.writeByte('"');
+}
+
 pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
     var arena = std.heap.ArenaAllocator.init(rt.gpa);
     defer arena.deinit();
@@ -9,14 +26,28 @@ pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
 
     const uptime_ms: i64 = if (rt.started_at_ms != 0) rt.clock.nowMs() - rt.started_at_ms else 0;
 
+    const detail = try rt.registry.stats(a);
+    var total_objects: u64 = 0;
+    var total_bytes: u64 = 0;
+    for (detail) |d| {
+        total_objects += d.objects;
+        total_bytes += d.bytes;
+    }
+
     var aw = std.Io.Writer.Allocating.init(a);
     const w = &aw.writer;
 
     try w.print(
         "{{\"service\":\"s3\",\"uptime_ms\":{d},\"buckets\":{d}," ++
             "\"objects\":{d},\"bytes\":{d},\"detail\":[",
-        .{ uptime_ms, @as(usize, 0), @as(u64, 0), @as(u64, 0) },
+        .{ uptime_ms, detail.len, total_objects, total_bytes },
     );
+    for (detail, 0..) |d, i| {
+        if (i != 0) try w.writeByte(',');
+        try w.writeAll("{\"name\":");
+        try writeJsonString(w, d.name);
+        try w.print(",\"objects\":{d},\"bytes\":{d}}}", .{ d.objects, d.bytes });
+    }
     try w.writeAll("]}");
 
     try ctx.json(.ok, aw.written());

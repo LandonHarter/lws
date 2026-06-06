@@ -4,6 +4,7 @@ const bucket_config = @import("bucket_config.zig");
 const log = @import("core").log;
 const time = @import("core").time;
 const Runtime = @import("runtime.zig").Runtime;
+const Registry = @import("registry.zig").Registry;
 const route = @import("wire/route.zig");
 
 const Config = struct {
@@ -88,6 +89,13 @@ pub fn main(init: std.process.Init) !void {
     const seed: u64 = @bitCast(clock.nowMs());
     var prng = std.Random.DefaultPrng.init(seed);
 
+    var registry = Registry.init(init.gpa, init.io, cfg.data_dir, cfg.fsync, clock, prng.random());
+    defer registry.deinit();
+    registry.recover() catch |err| {
+        std.debug.print("s3: recovery failed: {s}\n", .{@errorName(err)});
+        return err;
+    };
+
     var rt: Runtime = .{
         .gpa = init.gpa,
         .io = init.io,
@@ -100,6 +108,7 @@ pub fn main(init: std.process.Init) !void {
         .logger = .{ .threshold = log.Level.parse(cfg.log_level).? },
         .rng = prng.random(),
         .started_at_ms = clock.nowMs(),
+        .registry = &registry,
     };
 
     var srv = try server.Server.init(init.io, init.gpa, .{
