@@ -10,6 +10,7 @@ const queue = @import("../queue.zig");
 const arn = @import("../arn.zig");
 const message = @import("../message.zig");
 const message_store = @import("../store/message_store.zig");
+const redrive_mod = @import("../store/redrive.zig");
 const receipt = @import("../receipt.zig");
 const id = @import("core").id;
 
@@ -555,7 +556,16 @@ fn receiveMessage(rt: *Runtime, req: *const Request) anyerror!Response {
     if (wait_sec < 0) wait_sec = 0;
     if (wait_sec > 20) wait_sec = 20;
 
-    const received = try store.receive(arena, p.max, vis_sec * 1000, @intCast(wait_sec), p.attempt_id);
+    // Resolve any RedrivePolicy and its DLQ store before entering the receive
+    // path. The DLQ pointer is looked up here (where no store mutex is held) so
+    // the store never reaches into the registry under its own lock.
+    var redrive: ?message_store.Redrive = null;
+    if (redrive_mod.fromQueue(arena, q)) |rp| {
+        const dlq_store: ?*message_store.Store = if (rt.registry.byArn(rp.target_arn)) |dq| storeOf(dq) else null;
+        redrive = .{ .max_receive_count = rp.max_receive_count, .dlq = dlq_store };
+    }
+
+    const received = try store.receiveRedrive(arena, p.max, vis_sec * 1000, @intCast(wait_sec), p.attempt_id, redrive);
 
     switch (req.protocol) {
         .json => return jsonOk(try renderReceiveJson(arena, &p, received)),

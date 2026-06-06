@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = @import("core").log;
 const time = @import("core").time;
+const move_task = @import("store/move_task.zig");
 
 pub const LogLevel = log.Level;
 
@@ -16,6 +17,7 @@ pub const Runtime = struct {
     logger: log.Logger = .{},
     rng: std.Random,
     registry: *@import("registry.zig").Registry = undefined,
+    move_manager: *move_task.Manager = undefined,
 };
 
 const testing = std.testing;

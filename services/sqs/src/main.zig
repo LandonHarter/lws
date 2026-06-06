@@ -10,6 +10,8 @@ const queue_lifecycle = @import("handlers/queue_lifecycle.zig");
 const queue_attrs = @import("handlers/queue_attrs.zig");
 const messages = @import("handlers/messages.zig");
 const batch = @import("handlers/batch.zig");
+const move_tasks = @import("handlers/move_tasks.zig");
+const move_task = @import("store/move_task.zig");
 const Ticker = @import("ticker.zig").Ticker;
 
 const Config = struct {
@@ -97,6 +99,9 @@ pub fn main(init: std.process.Init) !void {
     defer reg.deinit();
     try reg.recover();
 
+    var move_manager = move_task.Manager.init(init.gpa, init.io, clock, prng.random());
+    defer move_manager.deinit();
+
     var rt: Runtime = .{
         .gpa = init.gpa,
         .io = init.io,
@@ -109,6 +114,7 @@ pub fn main(init: std.process.Init) !void {
         .logger = .{ .threshold = log.Level.parse(cfg.log_level).? },
         .rng = prng.random(),
         .registry = &reg,
+        .move_manager = &move_manager,
     };
 
     try dispatch.table.register(init.gpa, "Echo", dispatch.echo);
@@ -116,6 +122,7 @@ pub fn main(init: std.process.Init) !void {
     try queue_attrs.register(init.gpa);
     try messages.register(init.gpa);
     try batch.register(init.gpa);
+    try move_tasks.register(init.gpa);
 
     if (cfg.config_path.len > 0) {
         const loaded = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);

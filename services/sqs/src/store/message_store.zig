@@ -33,6 +33,15 @@ pub const InflightEntry = struct {
     lease_nonce: u64,
 };
 
+// Auto-redrive instruction threaded into the receive path. When a popped
+// message's receive_count+1 would exceed `max_receive_count` it is routed to
+// `dlq` instead of being delivered; a null `dlq` (policy set but DLQ missing)
+// means the message is dropped.
+pub const Redrive = struct {
+    max_receive_count: u32,
+    dlq: ?*Store,
+};
+
 // Result of a send. For FIFO queues `sequence_number` is the SequenceNumber to
 // echo (the monotonic seq) and `deduplicated` marks a 5-minute dedup hit whose
 // message was NOT enqueued. For standard queues `sequence_number` is null.
@@ -219,12 +228,21 @@ pub const Store = struct {
     // work or the deadline elapses. The ticker broadcasts every tick, so an empty
     // queue still wakes the waiter to re-check its deadline.
     pub fn receive(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, wait_seconds: u32, attempt_id: ?[]const u8) ![]ReceivedMessage {
+        return self.receiveRedrive(arena, max, visibility_ms, wait_seconds, attempt_id, null);
+    }
+
+    // Like `receive`, but applies auto-redrive: messages whose receive_count
+    // would exceed `redrive.max_receive_count` are moved to the DLQ (or dropped
+    // when the DLQ is missing) before any are returned to the caller. The DLQ
+    // store pointer is resolved by the caller — the receive path never touches
+    // the registry, to avoid inverting the registry/store lock order.
+    pub fn receiveRedrive(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, wait_seconds: u32, attempt_id: ?[]const u8, redrive: ?Redrive) ![]ReceivedMessage {
         const deadline_ms = self.clock.nowMs() + @as(i64, wait_seconds) * 1000;
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
         while (true) {
-            const got = try self.tryReceiveLocked(arena, max, visibility_ms, self.clock.nowMs(), attempt_id);
+            const got = try self.tryReceiveLocked(arena, max, visibility_ms, self.clock.nowMs(), attempt_id, redrive);
             if (got.len > 0) return got;
             if (self.clock.nowMs() >= deadline_ms) return got;
             // waitUncancelable releases the mutex while parked and re-acquires on wake.
@@ -234,13 +252,18 @@ pub const Store = struct {
 
     // Caller holds the mutex. Pulls up to `max` immediately-visible messages into
     // in-flight leases; returns an empty slice when nothing is available.
-    fn tryReceiveLocked(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8) ![]ReceivedMessage {
-        if (self.fifo) |fs| return self.receiveFifo(fs, arena, max, visibility_ms, now_ms, attempt_id);
+    fn tryReceiveLocked(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8, redrive: ?Redrive) ![]ReceivedMessage {
+        if (self.fifo) |fs| return self.receiveFifo(fs, arena, max, visibility_ms, now_ms, attempt_id, redrive);
 
         var out: std.ArrayList(ReceivedMessage) = .empty;
-        var taken: u32 = 0;
-        while (taken < max) : (taken += 1) {
+        while (out.items.len < max) {
             const msg = self.visible.pop() orelse break;
+            if (redrive) |rd| {
+                if (msg.receive_count + 1 > rd.max_receive_count) {
+                    try self.redriveMessageLocked(msg, rd);
+                    continue;
+                }
+            }
             msg.receive_count += 1;
             if (msg.first_received_at_ms == null) msg.first_received_at_ms = now_ms;
             const nonce = self.next_nonce;
@@ -260,7 +283,7 @@ pub const Store = struct {
             });
             try out.append(arena, .{ .msg = msg, .receipt_handle = handle });
         }
-        if (taken > 0) self.afterWrite();
+        if (out.items.len > 0) self.afterWrite();
         return out.toOwnedSlice(arena);
     }
 
@@ -268,7 +291,7 @@ pub const Store = struct {
     // group), preserving per-group order. A delivered group becomes blocked
     // (inflight_seq set) until its lease is deleted or expires. When attempt_id
     // is set, a fresh prior batch is replayed verbatim for idempotency.
-    fn receiveFifo(self: *Store, fs: *fifo.FifoState, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8) ![]ReceivedMessage {
+    fn receiveFifo(self: *Store, fs: *fifo.FifoState, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8, redrive: ?Redrive) ![]ReceivedMessage {
         if (attempt_id) |aid| {
             if (fs.receive_attempts.get(aid)) |cached| {
                 if (now_ms - cached.cached_at_ms < fifo.dedup_window_ms) {
@@ -287,6 +310,12 @@ pub const Store = struct {
             if (g.pending.items.len == 0) continue;
 
             const msg = g.pending.orderedRemove(0);
+            if (redrive) |rd| {
+                if (msg.receive_count + 1 > rd.max_receive_count) {
+                    try self.redriveMessageLocked(msg, rd);
+                    continue;
+                }
+            }
             msg.receive_count += 1;
             if (msg.first_received_at_ms == null) msg.first_received_at_ms = now_ms;
             const nonce = self.next_nonce;
@@ -389,6 +418,97 @@ pub const Store = struct {
         entry.visible_at_ms = new_visible_at_ms;
         try self.appendChangeVis(msg_seq, nonce, new_visible_at_ms);
         self.afterWrite();
+    }
+
+    // ---- redrive / message move ----
+
+    // Routes an already-popped message to the DLQ (preserving id/body/attrs but
+    // resetting receive_count and delay), or drops it when no DLQ is reachable.
+    // Caller holds this store's mutex; `dst.send` briefly takes the DLQ's mutex
+    // (source-before-destination ordering). Caller must NOT hold the registry
+    // mutex. Takes ownership of `msg`.
+    fn redriveMessageLocked(self: *Store, msg: *message.Message, rd: Redrive) !void {
+        if (rd.dlq) |dlq| {
+            const copy = dupeMessage(self.gpa, msg) catch |e| {
+                self.dropMovedLocked(msg);
+                return e;
+            };
+            copy.receive_count = 0;
+            copy.first_received_at_ms = null;
+            copy.delay_until_ms = 0;
+            copy.seq = 0;
+            _ = dlq.send(copy) catch {
+                copy.destroy(self.gpa);
+                // DLQ send failed (e.g. type mismatch): drop rather than loop.
+                self.dropMovedLocked(msg);
+                return;
+            };
+            // Persist source removal only after the destination has the copy, so
+            // a crash in between re-delivers (at-least-once) rather than loses.
+            self.appendMove(msg.seq, dlq.queue.id) catch {};
+            msg.destroy(self.gpa);
+        } else {
+            std.debug.print("[warn] redrive: dead-letter target for queue '{s}' is unreachable; dropping message seq={d}\n", .{ self.queue.name, msg.seq });
+            self.dropMovedLocked(msg);
+        }
+        self.afterWriteLocked();
+        self.wait.broadcast(self.io);
+    }
+
+    // Persists and frees a message removed from the visible set without delivery.
+    fn dropMovedLocked(self: *Store, msg: *message.Message) void {
+        self.appendDropRetention(msg.seq) catch {};
+        msg.destroy(self.gpa);
+    }
+
+    // Pops one immediately-deliverable message without leasing or counting it:
+    // the visible head (standard) or the head of the first unblocked group
+    // (FIFO). Caller holds the mutex.
+    fn popOneVisibleLocked(self: *Store) ?*message.Message {
+        if (self.fifo) |fs| {
+            for (fs.groups.values()) |g| {
+                if (g.inflight_seq != null) continue;
+                if (g.pending.items.len == 0) continue;
+                return g.pending.orderedRemove(0);
+            }
+            return null;
+        }
+        return self.visible.pop();
+    }
+
+    // Moves one immediately-deliverable message from this store to `dst`,
+    // returning false when the source has nothing left to move. Used by manual
+    // message-move tasks. Locks the source and destination separately (never
+    // both at once) to keep clear of the receive-path lock ordering.
+    pub fn moveOneTo(self: *Store, dst: *Store) !bool {
+        self.mutex.lockUncancelable(self.io);
+        const msg = self.popOneVisibleLocked() orelse {
+            self.mutex.unlock(self.io);
+            return false;
+        };
+        self.mutex.unlock(self.io);
+
+        const copy = dupeMessage(self.gpa, msg) catch |e| {
+            msg.destroy(self.gpa);
+            return e;
+        };
+        copy.receive_count = 0;
+        copy.first_received_at_ms = null;
+        copy.delay_until_ms = 0;
+        copy.seq = 0;
+        _ = dst.send(copy) catch |e| {
+            copy.destroy(self.gpa);
+            msg.destroy(self.gpa);
+            return e;
+        };
+
+        self.mutex.lockUncancelable(self.io);
+        self.appendMove(msg.seq, dst.queue.id) catch {};
+        self.afterWriteLocked();
+        self.mutex.unlock(self.io);
+
+        msg.destroy(self.gpa);
+        return true;
     }
 
     // ---- ticker ----
@@ -588,6 +708,15 @@ pub const Store = struct {
         var p: [8]u8 = undefined;
         std.mem.writeInt(u64, &p, seq, .little);
         try self.wal.append(.drop_retention, &p);
+    }
+
+    // Move record: drops `seq` from this (source) store on recovery. The
+    // destination queue id is recorded for diagnostics; recovery only reads seq.
+    fn appendMove(self: *Store, seq: u64, dst_queue_id: [16]u8) !void {
+        var p: [24]u8 = undefined;
+        std.mem.writeInt(u64, p[0..8], seq, .little);
+        @memcpy(p[8..24], &dst_queue_id);
+        try self.wal.append(.move, &p);
     }
 
     // dedup_cache payload: key[32] msg_id[36] seq:u64 cached_at:i64
@@ -796,7 +925,7 @@ pub const Store = struct {
                     e.msg.receive_count += 1;
                 }
             },
-            .delete_lease, .drop_retention => {
+            .delete_lease, .drop_retention, .move => {
                 const seq = std.mem.readInt(u64, frame.payload[0..8], .little);
                 if (entries.fetchSwapRemove(seq)) |kv| kv.value.msg.destroy(self.gpa);
             },
@@ -1004,6 +1133,52 @@ const Cursor = struct {
         return self.need(n);
     }
 };
+
+// Deep-copies a message into a freshly allocated struct owned by `gpa`. Used to
+// hand an independent copy to a destination store during a move/redrive while
+// the original stays owned by the source until it is dropped.
+fn dupeMessage(gpa: std.mem.Allocator, src: *const message.Message) !*message.Message {
+    const m = try gpa.create(message.Message);
+    errdefer gpa.destroy(m);
+
+    const attrs = try gpa.alloc(message.MessageAttribute, src.attributes.len);
+    var built: usize = 0;
+    errdefer {
+        for (attrs[0..built]) |a| {
+            gpa.free(a.name);
+            gpa.free(a.data_type);
+            if (a.string_value) |v| gpa.free(v);
+            if (a.binary_value) |v| gpa.free(v);
+        }
+        gpa.free(attrs);
+    }
+    for (src.attributes, 0..) |a, i| {
+        attrs[i] = .{
+            .name = try gpa.dupe(u8, a.name),
+            .data_type = try gpa.dupe(u8, a.data_type),
+            .string_value = if (a.string_value) |v| try gpa.dupe(u8, v) else null,
+            .binary_value = if (a.binary_value) |v| try gpa.dupe(u8, v) else null,
+        };
+        built += 1;
+    }
+
+    m.* = .{
+        .id = src.id,
+        .seq = src.seq,
+        .body = try gpa.dupe(u8, src.body),
+        .md5_of_body = src.md5_of_body,
+        .md5_of_attrs = src.md5_of_attrs,
+        .attributes = attrs,
+        .sent_at_ms = src.sent_at_ms,
+        .delay_until_ms = src.delay_until_ms,
+        .receive_count = src.receive_count,
+        .first_received_at_ms = src.first_received_at_ms,
+        .group_id = if (src.group_id) |g| try gpa.dupe(u8, g) else null,
+        .dedup_id = if (src.dedup_id) |d| try gpa.dupe(u8, d) else null,
+        .trace_header = if (src.trace_header) |t| try gpa.dupe(u8, t) else null,
+    };
+    return m;
+}
 
 fn dupeOpt(gpa: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
     if (bytes.len == 0) return null;
@@ -1606,6 +1781,83 @@ test "fifo recover rebuilds groups dedup and inflight" {
     const got = try store2.receive(env.arena.allocator(), 10, 30_000, 0, null);
     try testing.expectEqual(@as(usize, 1), got.len);
     try testing.expectEqualStrings("c", got[0].msg.body);
+}
+
+test "auto-redrive moves message to dlq after maxReceiveCount" {
+    var src_env = try TestEnv.init(345_600);
+    defer src_env.deinit();
+    var dlq_env = try TestEnv.init(345_600);
+    defer dlq_env.deinit();
+
+    var src = try Store.init(testing.allocator, src_env.io, time_mod.Clock.fixed(0, 1000), src_env.q, src_env.wal_path, src_env.snap_path, false);
+    defer src.deinit();
+    var dlq = try Store.init(testing.allocator, dlq_env.io, time_mod.Clock.fixed(0, 1000), dlq_env.q, dlq_env.wal_path, dlq_env.snap_path, false);
+    defer dlq.deinit();
+
+    const rd: Redrive = .{ .max_receive_count = 2, .dlq = &dlq };
+
+    _ = try src.send(try makeMsg(testing.allocator, "x", 0, 1000));
+
+    // receive 1: count -> 1, delivered
+    var got = try src.receiveRedrive(src_env.arena.allocator(), 1, 1000, 0, null, rd);
+    try testing.expectEqual(@as(usize, 1), got.len);
+    src.tick(2001); // expire lease
+
+    // receive 2: count -> 2, delivered
+    got = try src.receiveRedrive(src_env.arena.allocator(), 1, 1000, 0, null, rd);
+    try testing.expectEqual(@as(usize, 1), got.len);
+    src.tick(4001); // expire lease
+
+    // receive 3: 2+1 > 2 -> moved to DLQ, empty result
+    got = try src.receiveRedrive(src_env.arena.allocator(), 1, 1000, 0, null, rd);
+    try testing.expectEqual(@as(usize, 0), got.len);
+    try testing.expectEqual(@as(u64, 0), src.countVisible());
+    try testing.expectEqual(@as(u64, 0), src.countInFlight());
+
+    // DLQ now has the message; receive_count restarts at 1.
+    try testing.expectEqual(@as(u64, 1), dlq.countVisible());
+    const dgot = try dlq.receive(dlq_env.arena.allocator(), 1, 1000, 0, null);
+    try testing.expectEqual(@as(usize, 1), dgot.len);
+    try testing.expectEqualStrings("x", dgot[0].msg.body);
+    try testing.expectEqual(@as(u32, 1), dgot[0].msg.receive_count);
+}
+
+test "auto-redrive drops message when dlq missing" {
+    var env = try TestEnv.init(345_600);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    const rd: Redrive = .{ .max_receive_count = 1, .dlq = null };
+    _ = try store.send(try makeMsg(testing.allocator, "x", 0, 1000));
+
+    var got = try store.receiveRedrive(env.arena.allocator(), 1, 1000, 0, null, rd);
+    try testing.expectEqual(@as(usize, 1), got.len); // count 1, not > 1
+    store.tick(2001);
+
+    got = try store.receiveRedrive(env.arena.allocator(), 1, 1000, 0, null, rd);
+    try testing.expectEqual(@as(usize, 0), got.len); // 1+1 > 1 -> dropped
+    try testing.expectEqual(@as(u64, 0), store.countVisible());
+    try testing.expectEqual(@as(u64, 0), store.countInFlight());
+}
+
+test "moveOneTo transfers a visible message" {
+    var src_env = try TestEnv.init(345_600);
+    defer src_env.deinit();
+    var dst_env = try TestEnv.init(345_600);
+    defer dst_env.deinit();
+
+    var src = try Store.init(testing.allocator, src_env.io, time_mod.Clock.fixed(0, 1000), src_env.q, src_env.wal_path, src_env.snap_path, false);
+    defer src.deinit();
+    var dst = try Store.init(testing.allocator, dst_env.io, time_mod.Clock.fixed(0, 1000), dst_env.q, dst_env.wal_path, dst_env.snap_path, false);
+    defer dst.deinit();
+
+    _ = try src.send(try makeMsg(testing.allocator, "m", 0, 1000));
+    try testing.expect(try src.moveOneTo(&dst));
+    try testing.expectEqual(@as(u64, 0), src.countVisible());
+    try testing.expectEqual(@as(u64, 1), dst.countVisible());
+    // nothing left to move
+    try testing.expect(!try src.moveOneTo(&dst));
 }
 
 test "fifo snapshot round trip" {

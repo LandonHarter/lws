@@ -156,6 +156,17 @@ pub const Registry = struct {
         return self.queues_by_name.get(name);
     }
 
+    // Resolves a queue from its ARN by taking the last ':'-delimited segment as
+    // the queue name. Returns null for a malformed ARN or unknown queue.
+    pub fn byArn(self: *Registry, arn: []const u8) ?*queue.Queue {
+        const idx = std.mem.lastIndexOfScalar(u8, arn, ':') orelse return null;
+        const name = arn[idx + 1 ..];
+        if (name.len == 0) return null;
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.queues_by_name.get(name);
+    }
+
     // Validates each (name,value) with op=.update against the queue kind, then
     // applies them all and rewrites meta.json. Validation is atomic: a single
     // bad attr aborts before any mutation.
