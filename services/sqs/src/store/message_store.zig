@@ -5,6 +5,7 @@ const queue = @import("../queue.zig");
 const config = @import("config");
 const time_mod = @import("core").time;
 const wal = @import("wal.zig");
+const fifo = @import("fifo.zig");
 
 const Order = std.math.Order;
 
@@ -32,6 +33,17 @@ pub const InflightEntry = struct {
     lease_nonce: u64,
 };
 
+// Result of a send. For FIFO queues `sequence_number` is the SequenceNumber to
+// echo (the monotonic seq) and `deduplicated` marks a 5-minute dedup hit whose
+// message was NOT enqueued. For standard queues `sequence_number` is null.
+pub const SendOutcome = struct {
+    id: [36]u8,
+    sequence_number: ?u64 = null,
+    md5_of_body: [32]u8,
+    md5_of_attrs: ?[32]u8 = null,
+    deduplicated: bool = false,
+};
+
 pub const Store = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -51,6 +63,7 @@ pub const Store = struct {
     next_nonce: u64 = 1,
     wal: wal.WalWriter,
     snapshot_pending_writes: u32 = 0,
+    fifo: ?*fifo.FifoState = null,
 
     pub fn init(
         gpa: std.mem.Allocator,
@@ -62,6 +75,26 @@ pub const Store = struct {
         fsync: bool,
     ) !Store {
         const w = try wal.WalWriter.open(io, wal_path, fsync);
+
+        var fstate: ?*fifo.FifoState = null;
+        if (q.kind == .fifo) {
+            const fs = try gpa.create(fifo.FifoState);
+            fs.* = .{ .gpa = gpa };
+            if (q.attributes.get("DeduplicationScope")) |v| switch (v) {
+                .string => |s| if (std.mem.eql(u8, s, "messageGroup")) {
+                    fs.scope = .message_group;
+                },
+                else => {},
+            };
+            if (q.attributes.get("FifoThroughputLimit")) |v| switch (v) {
+                .string => |s| if (std.mem.eql(u8, s, "perMessageGroupId")) {
+                    fs.throughput = .per_message_group;
+                },
+                else => {},
+            };
+            fstate = fs;
+        }
+
         return .{
             .gpa = gpa,
             .io = io,
@@ -70,6 +103,7 @@ pub const Store = struct {
             .wal_path = wal_path,
             .snapshot_path = snapshot_path,
             .wal = w,
+            .fifo = fstate,
         };
     }
 
@@ -80,6 +114,11 @@ pub const Store = struct {
         self.visible.deinit(self.gpa);
         self.delayed.deinit(self.gpa);
         self.inflight.deinit(self.gpa);
+        if (self.fifo) |fs| {
+            fs.destroyPending();
+            fs.deinit();
+            self.gpa.destroy(fs);
+        }
         self.wal.close();
     }
 
@@ -96,10 +135,13 @@ pub const Store = struct {
     // ---- send ----
 
     // Takes ownership of `msg` (allocated from self.gpa). Assigns seq, persists,
-    // enqueues into visible or delayed based on delay_until_ms.
-    pub fn send(self: *Store, msg: *message.Message) !void {
+    // enqueues into visible or delayed based on delay_until_ms. On a FIFO dedup
+    // hit the message is freed and the cached outcome is returned instead.
+    pub fn send(self: *Store, msg: *message.Message) !SendOutcome {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+
+        if (self.fifo) |fs| return self.sendFifo(fs, msg);
 
         msg.seq = self.next_seq;
         self.next_seq += 1;
@@ -108,6 +150,57 @@ pub const Store = struct {
         try self.enqueue(msg);
         self.afterWrite();
         self.wait.signal(self.io);
+        return .{ .id = msg.id, .md5_of_body = msg.md5_of_body, .md5_of_attrs = msg.md5_of_attrs };
+    }
+
+    // FIFO send: enforce dedup, assign seq, push to the message group's tail.
+    // Caller holds the mutex. Requires msg.group_id set; if msg.dedup_id is
+    // null the queue must be content-based (validated by the handler).
+    fn sendFifo(self: *Store, fs: *fifo.FifoState, msg: *message.Message) !SendOutcome {
+        const gid = msg.group_id orelse return error.MissingGroupId;
+        const content = msg.dedup_id orelse msg.body;
+        const key = fifo.dedupKey(fs.scope, gid, content);
+        const now = self.clock.nowMs();
+
+        if (fs.dedup.get(key)) |e| {
+            if (now - e.cached_at_ms < fifo.dedup_window_ms) {
+                const outcome: SendOutcome = .{
+                    .id = e.msg_id,
+                    .sequence_number = e.seq,
+                    .md5_of_body = e.md5_of_body,
+                    .md5_of_attrs = e.md5_of_attrs,
+                    .deduplicated = true,
+                };
+                msg.destroy(self.gpa);
+                return outcome;
+            }
+        }
+
+        msg.seq = self.next_seq;
+        self.next_seq += 1;
+
+        const entry: fifo.DedupEntry = .{
+            .msg_id = msg.id,
+            .seq = msg.seq,
+            .cached_at_ms = now,
+            .md5_of_body = msg.md5_of_body,
+            .md5_of_attrs = msg.md5_of_attrs,
+        };
+        try fs.dedup.put(self.gpa, key, entry);
+        try self.appendSend(msg);
+        try self.appendDedup(key, entry);
+
+        const group = try fs.getOrCreateGroup(gid);
+        try group.pending.append(self.gpa, msg);
+
+        self.afterWrite();
+        self.wait.signal(self.io);
+        return .{
+            .id = msg.id,
+            .sequence_number = msg.seq,
+            .md5_of_body = msg.md5_of_body,
+            .md5_of_attrs = msg.md5_of_attrs,
+        };
     }
 
     fn enqueue(self: *Store, msg: *message.Message) !void {
@@ -121,9 +214,11 @@ pub const Store = struct {
 
     // ---- receive ----
 
-    pub fn receive(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64) ![]ReceivedMessage {
+    pub fn receive(self: *Store, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8) ![]ReceivedMessage {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+
+        if (self.fifo) |fs| return self.receiveFifo(fs, arena, max, visibility_ms, now_ms, attempt_id);
 
         var out: std.ArrayList(ReceivedMessage) = .empty;
         var taken: u32 = 0;
@@ -152,6 +247,79 @@ pub const Store = struct {
         return out.toOwnedSlice(arena);
     }
 
+    // FIFO receive: deliver the head of each non-blocked group (one message per
+    // group), preserving per-group order. A delivered group becomes blocked
+    // (inflight_seq set) until its lease is deleted or expires. When attempt_id
+    // is set, a fresh prior batch is replayed verbatim for idempotency.
+    fn receiveFifo(self: *Store, fs: *fifo.FifoState, arena: std.mem.Allocator, max: u32, visibility_ms: i64, now_ms: i64, attempt_id: ?[]const u8) ![]ReceivedMessage {
+        if (attempt_id) |aid| {
+            if (fs.receive_attempts.get(aid)) |cached| {
+                if (now_ms - cached.cached_at_ms < fifo.dedup_window_ms) {
+                    return self.replayReceive(arena, cached);
+                }
+            }
+        }
+
+        var out: std.ArrayList(ReceivedMessage) = .empty;
+        var records: std.ArrayList(fifo.ReceivedRecord) = .empty;
+        defer records.deinit(self.gpa);
+
+        for (fs.groups.values()) |g| {
+            if (out.items.len >= max) break;
+            if (g.inflight_seq != null) continue;
+            if (g.pending.items.len == 0) continue;
+
+            const msg = g.pending.orderedRemove(0);
+            msg.receive_count += 1;
+            if (msg.first_received_at_ms == null) msg.first_received_at_ms = now_ms;
+            const nonce = self.next_nonce;
+            self.next_nonce += 1;
+            const visible_at = now_ms + visibility_ms;
+            try self.inflight.put(self.gpa, msg.seq, .{
+                .msg = msg,
+                .visible_at_ms = visible_at,
+                .lease_nonce = nonce,
+            });
+            g.inflight_seq = msg.seq;
+            try self.appendLease(msg.seq, nonce, visible_at);
+            const handle = try receipt.encode(arena, .{
+                .queue_id = self.queue.id,
+                .msg_seq = msg.seq,
+                .lease_nonce = nonce,
+                .visible_at_ms = visible_at,
+            });
+            try out.append(arena, .{ .msg = msg, .receipt_handle = handle });
+            try records.append(self.gpa, .{ .msg_seq = msg.seq, .lease_nonce = nonce, .visible_at_ms = visible_at });
+        }
+
+        if (out.items.len > 0) self.afterWrite();
+        if (attempt_id) |aid| {
+            const slice = try records.toOwnedSlice(self.gpa);
+            errdefer self.gpa.free(slice);
+            try fs.cacheReceive(aid, now_ms, slice);
+        }
+        return out.toOwnedSlice(arena);
+    }
+
+    // Rebuilds a prior batch from a cached ReceiveRequestAttemptId. Messages
+    // already deleted are skipped; surviving leases yield byte-identical
+    // receipt handles (same seq/nonce/visible_at).
+    fn replayReceive(self: *Store, arena: std.mem.Allocator, cached: fifo.CachedReceive) ![]ReceivedMessage {
+        var out: std.ArrayList(ReceivedMessage) = .empty;
+        for (cached.records) |r| {
+            const e = self.inflight.get(r.msg_seq) orelse continue;
+            if (e.lease_nonce != r.lease_nonce) continue;
+            const handle = try receipt.encode(arena, .{
+                .queue_id = self.queue.id,
+                .msg_seq = r.msg_seq,
+                .lease_nonce = r.lease_nonce,
+                .visible_at_ms = r.visible_at_ms,
+            });
+            try out.append(arena, .{ .msg = e.msg, .receipt_handle = handle });
+        }
+        return out.toOwnedSlice(arena);
+    }
+
     // ---- delete ----
 
     pub fn deleteLease(self: *Store, msg_seq: u64, nonce: u64) !void {
@@ -163,7 +331,26 @@ pub const Store = struct {
         _ = self.inflight.swapRemove(msg_seq);
         try self.appendDeleteLease(msg_seq, nonce);
         self.afterWrite();
+        if (self.fifo) |fs| fifoUnblock(fs, entry.msg);
         entry.msg.destroy(self.gpa);
+    }
+
+    // Clears a group's in-flight lease after its head message resolves, then
+    // drops the group if it has no remaining work.
+    fn fifoUnblock(fs: *fifo.FifoState, msg: *message.Message) void {
+        const gid = msg.group_id orelse return;
+        const g = fs.groups.get(gid) orelse return;
+        if (g.inflight_seq == msg.seq) g.inflight_seq = null;
+        if (g.inflight_seq == null and g.pending.items.len == 0) fs.removeGroup(gid);
+    }
+
+    // Returns an expired-lease message to the front of its group, restoring
+    // strict per-group order, and unblocks the group.
+    fn fifoReturn(self: *Store, fs: *fifo.FifoState, msg: *message.Message) !void {
+        const gid = msg.group_id orelse return error.MissingGroupId;
+        const g = try fs.getOrCreateGroup(gid);
+        try g.pending.insert(self.gpa, 0, msg);
+        if (g.inflight_seq == msg.seq) g.inflight_seq = null;
     }
 
     // ---- change visibility (used by Plan 06) ----
@@ -204,13 +391,19 @@ pub const Store = struct {
             const entry = self.inflight.values()[i];
             if (entry.visible_at_ms <= now_ms) {
                 _ = self.inflight.swapRemoveAt(i);
-                self.visible.push(self.gpa, entry.msg) catch continue;
+                if (self.fifo) |fs| {
+                    self.fifoReturn(fs, entry.msg) catch continue;
+                } else {
+                    self.visible.push(self.gpa, entry.msg) catch continue;
+                }
                 self.appendExpireLease(entry.msg.seq, entry.lease_nonce) catch {};
                 promoted = true;
             } else {
                 i += 1;
             }
         }
+
+        if (self.fifo) |fs| fs.prune(now_ms);
 
         self.dropRetention(now_ms);
 
@@ -245,9 +438,25 @@ pub const Store = struct {
             const entry = self.inflight.values()[fi];
             if (now_ms - entry.msg.sent_at_ms > retention) {
                 _ = self.inflight.swapRemoveAt(fi);
+                if (self.fifo) |fs| fifoUnblock(fs, entry.msg);
                 self.appendDropRetention(entry.msg.seq) catch {};
                 entry.msg.destroy(self.gpa);
             } else fi += 1;
+        }
+
+        // FIFO pending lives in per-group queues, not `visible`/`delayed`.
+        if (self.fifo) |fs| {
+            for (fs.groups.values()) |g| {
+                var gi: usize = 0;
+                while (gi < g.pending.items.len) {
+                    const m = g.pending.items[gi];
+                    if (now_ms - m.sent_at_ms > retention) {
+                        _ = g.pending.orderedRemove(gi);
+                        self.appendDropRetention(m.seq) catch {};
+                        m.destroy(self.gpa);
+                    } else gi += 1;
+                }
+            }
         }
     }
 
@@ -261,6 +470,15 @@ pub const Store = struct {
         while (self.delayed.pop()) |m| m.destroy(self.gpa);
         for (self.inflight.values()) |e| e.msg.destroy(self.gpa);
         self.inflight.clearRetainingCapacity();
+        if (self.fifo) |fs| {
+            fs.destroyPending();
+            for (fs.groups.keys(), fs.groups.values()) |k, g| {
+                g.pending.deinit(self.gpa);
+                self.gpa.destroy(g);
+                self.gpa.free(k);
+            }
+            fs.groups.clearRetainingCapacity();
+        }
         try self.wal.append(.purge, &.{});
         self.afterWrite();
     }
@@ -268,6 +486,11 @@ pub const Store = struct {
     pub fn countVisible(self: *Store) u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+        if (self.fifo) |fs| {
+            var total: u64 = 0;
+            for (fs.groups.values()) |g| total += g.pending.items.len;
+            return total;
+        }
         return @intCast(self.visible.count());
     }
     pub fn countInFlight(self: *Store) u64 {
@@ -278,6 +501,7 @@ pub const Store = struct {
     pub fn countDelayed(self: *Store) u64 {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+        if (self.fifo != null) return 0;
         return @intCast(self.delayed.count());
     }
 
@@ -341,6 +565,25 @@ pub const Store = struct {
         try self.wal.append(.drop_retention, &p);
     }
 
+    // dedup_cache payload: key[32] msg_id[36] seq:u64 cached_at:i64
+    //   md5_of_body[32] has_attrs:u8 [md5_of_attrs[32]]
+    fn appendDedup(self: *Store, key: [32]u8, e: fifo.DedupEntry) !void {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.gpa);
+        try buf.appendSlice(self.gpa, &key);
+        try buf.appendSlice(self.gpa, &e.msg_id);
+        try appendU64(self.gpa, &buf, e.seq);
+        try appendI64(self.gpa, &buf, e.cached_at_ms);
+        try buf.appendSlice(self.gpa, &e.md5_of_body);
+        if (e.md5_of_attrs) |m| {
+            try buf.append(self.gpa, 1);
+            try buf.appendSlice(self.gpa, &m);
+        } else {
+            try buf.append(self.gpa, 0);
+        }
+        try self.wal.append(.dedup_cache, buf.items);
+    }
+
     // ---- snapshot ----
 
     fn writeSnapshot(self: *Store) !void {
@@ -351,12 +594,43 @@ pub const Store = struct {
         try appendU64(self.gpa, &buf, self.next_seq);
         try appendU64(self.gpa, &buf, self.next_nonce);
 
-        const total: u32 = @intCast(self.visible.count() + self.delayed.count() + self.inflight.count());
+        var fifo_pending: usize = 0;
+        if (self.fifo) |fs| {
+            for (fs.groups.values()) |g| fifo_pending += g.pending.items.len;
+        }
+
+        const total: u32 = @intCast(self.visible.count() + self.delayed.count() + self.inflight.count() + fifo_pending);
         try appendU32(self.gpa, &buf, total);
 
         for (self.visible.items) |m| try self.appendSnapshotMsg(&buf, m, false, 0, 0);
         for (self.delayed.items) |m| try self.appendSnapshotMsg(&buf, m, false, 0, 0);
         for (self.inflight.values()) |e| try self.appendSnapshotMsg(&buf, e.msg, true, e.lease_nonce, e.visible_at_ms);
+        if (self.fifo) |fs| {
+            for (fs.groups.values()) |g| {
+                for (g.pending.items) |m| try self.appendSnapshotMsg(&buf, m, false, 0, 0);
+            }
+        }
+
+        // FIFO trailer: dedup cache. has_fifo=0 for standard queues.
+        if (self.fifo) |fs| {
+            try buf.append(self.gpa, 1);
+            try appendU32(self.gpa, &buf, @intCast(fs.dedup.count()));
+            for (fs.dedup.keys(), fs.dedup.values()) |k, e| {
+                try buf.appendSlice(self.gpa, &k);
+                try buf.appendSlice(self.gpa, &e.msg_id);
+                try appendU64(self.gpa, &buf, e.seq);
+                try appendI64(self.gpa, &buf, e.cached_at_ms);
+                try buf.appendSlice(self.gpa, &e.md5_of_body);
+                if (e.md5_of_attrs) |m| {
+                    try buf.append(self.gpa, 1);
+                    try buf.appendSlice(self.gpa, &m);
+                } else {
+                    try buf.append(self.gpa, 0);
+                }
+            }
+        } else {
+            try buf.append(self.gpa, 0);
+        }
 
         var crc = std.hash.crc.Crc32.init();
         crc.update(buf.items);
@@ -418,24 +692,63 @@ pub const Store = struct {
         }
 
         const now = self.clock.nowMs();
-        for (entries.values()) |e| {
-            if (e.msg.seq > max_seq) max_seq = e.msg.seq;
-            if (e.leased and e.visible_at_ms > now) {
-                try self.inflight.put(self.gpa, e.msg.seq, .{
-                    .msg = e.msg,
-                    .visible_at_ms = e.visible_at_ms,
-                    .lease_nonce = e.lease_nonce,
-                });
-            } else if (e.msg.delay_until_ms > now) {
-                try self.delayed.push(self.gpa, e.msg);
-            } else {
-                try self.visible.push(self.gpa, e.msg);
+        if (self.fifo) |fs| {
+            try self.distributeFifo(fs, &entries, now, &max_seq);
+        } else {
+            for (entries.values()) |e| {
+                if (e.msg.seq > max_seq) max_seq = e.msg.seq;
+                if (e.leased and e.visible_at_ms > now) {
+                    try self.inflight.put(self.gpa, e.msg.seq, .{
+                        .msg = e.msg,
+                        .visible_at_ms = e.visible_at_ms,
+                        .lease_nonce = e.lease_nonce,
+                    });
+                } else if (e.msg.delay_until_ms > now) {
+                    try self.delayed.push(self.gpa, e.msg);
+                } else {
+                    try self.visible.push(self.gpa, e.msg);
+                }
             }
         }
         entries.deinit(self.gpa);
 
         self.next_seq = max_seq + 1;
         self.next_nonce = max_nonce + 1;
+    }
+
+    fn entrySeqLess(_: void, a: Entry, b: Entry) bool {
+        return a.msg.seq < b.msg.seq;
+    }
+
+    // Rebuilds per-group queues in seq order: fresh leases go in-flight (and
+    // block their group); everything else becomes pending. Dedup-entry seqs are
+    // folded into max_seq so the seq counter never rewinds onto a deleted id.
+    fn distributeFifo(self: *Store, fs: *fifo.FifoState, entries: *std.AutoArrayHashMapUnmanaged(u64, Entry), now: i64, max_seq: *u64) !void {
+        const vals = try self.gpa.dupe(Entry, entries.values());
+        defer self.gpa.free(vals);
+        std.mem.sort(Entry, vals, {}, entrySeqLess);
+
+        for (vals) |e| {
+            if (e.msg.seq > max_seq.*) max_seq.* = e.msg.seq;
+            const gid = e.msg.group_id orelse {
+                e.msg.destroy(self.gpa);
+                continue;
+            };
+            const g = try fs.getOrCreateGroup(gid);
+            if (e.leased and e.visible_at_ms > now) {
+                try self.inflight.put(self.gpa, e.msg.seq, .{
+                    .msg = e.msg,
+                    .visible_at_ms = e.visible_at_ms,
+                    .lease_nonce = e.lease_nonce,
+                });
+                g.inflight_seq = e.msg.seq;
+            } else {
+                try g.pending.append(self.gpa, e.msg);
+            }
+        }
+        for (fs.dedup.values()) |d| {
+            if (d.seq > max_seq.*) max_seq.* = d.seq;
+        }
     }
 
     fn applyRecord(self: *Store, entries: *std.AutoArrayHashMapUnmanaged(u64, Entry), frame: wal.Frame, max_seq: *u64, max_nonce: *u64) !void {
@@ -474,6 +787,25 @@ pub const Store = struct {
             .purge => {
                 for (entries.values()) |e| e.msg.destroy(self.gpa);
                 entries.clearRetainingCapacity();
+                if (self.fifo) |fs| fs.dedup.clearRetainingCapacity();
+            },
+            .dedup_cache => {
+                if (self.fifo) |fs| {
+                    var cur = Cursor{ .buf = frame.payload };
+                    var key: [32]u8 = undefined;
+                    @memcpy(&key, try cur.bytes(32));
+                    var entry: fifo.DedupEntry = undefined;
+                    @memcpy(&entry.msg_id, try cur.bytes(36));
+                    entry.seq = try cur.rdU64();
+                    entry.cached_at_ms = try cur.rdI64();
+                    @memcpy(&entry.md5_of_body, try cur.bytes(32));
+                    entry.md5_of_attrs = if ((try cur.rdU8()) != 0) blk: {
+                        var m: [32]u8 = undefined;
+                        @memcpy(&m, try cur.bytes(32));
+                        break :blk m;
+                    } else null;
+                    try fs.dedup.put(self.gpa, key, entry);
+                }
             },
         }
     }
@@ -519,6 +851,29 @@ pub const Store = struct {
             if (msg.seq > max_seq.*) max_seq.* = msg.seq;
             if (nonce > max_nonce.*) max_nonce.* = nonce;
             try entries.put(self.gpa, msg.seq, .{ .msg = msg, .leased = leased, .lease_nonce = nonce, .visible_at_ms = visible_at });
+        }
+
+        const has_fifo = (try cur.rdU8()) != 0;
+        if (has_fifo) {
+            if (self.fifo) |fs| {
+                const dcount = try cur.rdU32();
+                var di: u32 = 0;
+                while (di < dcount) : (di += 1) {
+                    var key: [32]u8 = undefined;
+                    @memcpy(&key, try cur.bytes(32));
+                    var entry: fifo.DedupEntry = undefined;
+                    @memcpy(&entry.msg_id, try cur.bytes(36));
+                    entry.seq = try cur.rdU64();
+                    entry.cached_at_ms = try cur.rdI64();
+                    @memcpy(&entry.md5_of_body, try cur.bytes(32));
+                    entry.md5_of_attrs = if ((try cur.rdU8()) != 0) blk: {
+                        var ma: [32]u8 = undefined;
+                        @memcpy(&ma, try cur.bytes(32));
+                        break :blk ma;
+                    } else null;
+                    try fs.dedup.put(self.gpa, key, entry);
+                }
+            } else return error.Corrupt;
         }
     }
 };
@@ -797,8 +1152,8 @@ test "send enqueues visible vs delayed" {
     var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
     defer store.deinit();
 
-    try store.send(try makeMsg(testing.allocator, "now", 0, 1000));
-    try store.send(try makeMsg(testing.allocator, "later", 5000, 1000));
+    _ = try store.send(try makeMsg(testing.allocator, "now", 0, 1000));
+    _ = try store.send(try makeMsg(testing.allocator, "later", 5000, 1000));
     try testing.expectEqual(@as(u64, 1), store.countVisible());
     try testing.expectEqual(@as(u64, 1), store.countDelayed());
 }
@@ -809,8 +1164,8 @@ test "receive moves to inflight then delete removes" {
     var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
     defer store.deinit();
 
-    try store.send(try makeMsg(testing.allocator, "hi", 0, 1000));
-    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000);
+    _ = try store.send(try makeMsg(testing.allocator, "hi", 0, 1000));
+    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
     try testing.expectEqual(@as(usize, 1), got.len);
     try testing.expectEqual(@as(u64, 0), store.countVisible());
     try testing.expectEqual(@as(u64, 1), store.countInFlight());
@@ -827,8 +1182,8 @@ test "delete with stale nonce is no-op success" {
     var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
     defer store.deinit();
 
-    try store.send(try makeMsg(testing.allocator, "hi", 0, 1000));
-    const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000);
+    _ = try store.send(try makeMsg(testing.allocator, "hi", 0, 1000));
+    const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000, null);
     const h = try receipt.decode(got[0].receipt_handle);
     try store.deleteLease(h.msg_seq, h.lease_nonce + 999); // wrong nonce
     try testing.expectEqual(@as(u64, 1), store.countInFlight()); // still there
@@ -842,13 +1197,13 @@ test "tick promotes delayed and expired inflight" {
     var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
     defer store.deinit();
 
-    try store.send(try makeMsg(testing.allocator, "d", 2000, 1000)); // delayed until 2000
+    _ = try store.send(try makeMsg(testing.allocator, "d", 2000, 1000)); // delayed until 2000
     store.tick(1500);
     try testing.expectEqual(@as(u64, 1), store.countDelayed());
     store.tick(2000);
     try testing.expectEqual(@as(u64, 1), store.countVisible());
 
-    const got = try store.receive(env.arena.allocator(), 1, 30_000, 2000);
+    const got = try store.receive(env.arena.allocator(), 1, 30_000, 2000, null);
     _ = got;
     try testing.expectEqual(@as(u64, 1), store.countInFlight());
     store.tick(2000 + 30_000); // lease expires
@@ -862,7 +1217,7 @@ test "tick drops retention-expired" {
     var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
     defer store.deinit();
 
-    try store.send(try makeMsg(testing.allocator, "old", 0, 1000)); // sent at 1000ms
+    _ = try store.send(try makeMsg(testing.allocator, "old", 0, 1000)); // sent at 1000ms
     store.tick(1000 + 61_000); // 61s later
     try testing.expectEqual(@as(u64, 0), store.countVisible());
 }
@@ -873,9 +1228,9 @@ test "recover rebuilds state from WAL" {
     {
         var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
         defer store.deinit();
-        try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
-        try store.send(try makeMsg(testing.allocator, "b", 0, 1000));
-        const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000);
+        _ = try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
+        _ = try store.send(try makeMsg(testing.allocator, "b", 0, 1000));
+        const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000, null);
         const h = try receipt.decode(got[0].receipt_handle);
         try store.deleteLease(h.msg_seq, h.lease_nonce); // delete "a"
     }
@@ -894,18 +1249,18 @@ test "recover restores receive_count" {
     {
         var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
         defer store.deinit();
-        try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
+        _ = try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
         // receive, expire, receive again -> receive_count 2
-        _ = try store.receive(env.arena.allocator(), 1, 1000, 1000);
+        _ = try store.receive(env.arena.allocator(), 1, 1000, 1000, null);
         store.tick(2001); // expire lease (visible_at=2000)
-        _ = try store.receive(env.arena.allocator(), 1, 1000, 3000);
+        _ = try store.receive(env.arena.allocator(), 1, 1000, 3000, null);
     }
     var store2 = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 10_000), env.q, env.wal_path, env.snap_path, false);
     defer store2.deinit();
     try store2.recover();
     // lease at vis 4000 already passed by now=10000 -> visible
     try testing.expectEqual(@as(u64, 1), store2.countVisible());
-    const got = try store2.receive(env.arena.allocator(), 1, 1000, 10_000);
+    const got = try store2.receive(env.arena.allocator(), 1, 1000, 10_000, null);
     try testing.expectEqual(@as(u32, 3), got[0].msg.receive_count);
 }
 
@@ -914,9 +1269,263 @@ test "purge clears all" {
     defer env.deinit();
     var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
     defer store.deinit();
-    try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
-    try store.send(try makeMsg(testing.allocator, "b", 3000, 1000));
+    _ = try store.send(try makeMsg(testing.allocator, "a", 0, 1000));
+    _ = try store.send(try makeMsg(testing.allocator, "b", 3000, 1000));
     try store.purge();
     try testing.expectEqual(@as(u64, 0), store.countVisible());
     try testing.expectEqual(@as(u64, 0), store.countDelayed());
+}
+
+// ---- FIFO tests ----
+
+fn initFifoEnv(retention_sec: i64, cbd: bool) !TestEnv {
+    var env = try TestEnv.init(retention_sec);
+    const a = env.arena.allocator();
+    env.q.kind = .fifo;
+    try env.q.attributes.put(a, "ContentBasedDeduplication", .{ .boolean = cbd });
+    return env;
+}
+
+fn makeFifoMsg(gpa: std.mem.Allocator, id_byte: u8, body: []const u8, group_id: []const u8, dedup_id: ?[]const u8, sent_at_ms: i64) !*message.Message {
+    const msg = try gpa.create(message.Message);
+    msg.* = .{
+        .id = undefined,
+        .seq = 0,
+        .body = try gpa.dupe(u8, body),
+        .md5_of_body = undefined,
+        .md5_of_attrs = null,
+        .attributes = try gpa.alloc(message.MessageAttribute, 0),
+        .sent_at_ms = sent_at_ms,
+        .delay_until_ms = 0,
+        .receive_count = 0,
+        .first_received_at_ms = null,
+        .group_id = try gpa.dupe(u8, group_id),
+        .dedup_id = if (dedup_id) |d| try gpa.dupe(u8, d) else null,
+    };
+    @memcpy(&msg.id, "00000000-0000-4000-8000-0000000000xx");
+    msg.id[34] = '0' + (id_byte / 10);
+    msg.id[35] = '0' + (id_byte % 10);
+    message.computeBodyMd5(&msg.md5_of_body, msg.body);
+    return msg;
+}
+
+test "fifo send requires group id" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    const msg = try makeMsg(testing.allocator, "x", 0, 1000); // no group_id
+    try testing.expectError(error.MissingGroupId, store.send(msg));
+    msg.destroy(testing.allocator);
+}
+
+test "fifo explicit dedup id suppresses duplicate" {
+    var env = try initFifoEnv(345_600, false);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    const r1 = try store.send(try makeFifoMsg(testing.allocator, 1, "alpha", "g1", "d1", 1000));
+    const r2 = try store.send(try makeFifoMsg(testing.allocator, 2, "beta", "g1", "d1", 1000));
+    try testing.expect(!r1.deduplicated);
+    try testing.expect(r2.deduplicated);
+    try testing.expectEqualSlices(u8, &r1.id, &r2.id);
+    try testing.expectEqual(r1.sequence_number.?, r2.sequence_number.?);
+    try testing.expectEqual(@as(u64, 1), store.countVisible()); // only one enqueued
+}
+
+test "fifo content based dedup suppresses duplicate body" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    const r1 = try store.send(try makeFifoMsg(testing.allocator, 1, "same", "g1", null, 1000));
+    const r2 = try store.send(try makeFifoMsg(testing.allocator, 2, "same", "g1", null, 1000));
+    try testing.expect(r2.deduplicated);
+    try testing.expectEqualSlices(u8, &r1.id, &r2.id);
+    try testing.expectEqual(@as(u64, 1), store.countVisible());
+}
+
+test "fifo dedup expires after window" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    _ = try store.send(try makeFifoMsg(testing.allocator, 1, "same", "g1", null, 1000));
+    // advance clock past 5min window
+    store.clock = time_mod.Clock.fixed(0, 1000 + fifo.dedup_window_ms + 1);
+    const r2 = try store.send(try makeFifoMsg(testing.allocator, 2, "same", "g1", null, 1000 + fifo.dedup_window_ms + 1));
+    try testing.expect(!r2.deduplicated);
+    try testing.expectEqual(@as(u64, 2), store.countVisible());
+}
+
+test "fifo sequence numbers are monotonic" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    const r1 = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+    const r2 = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g1", null, 1000));
+    try testing.expect(r2.sequence_number.? > r1.sequence_number.?);
+}
+
+test "fifo per-group blocking across groups" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+    _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g1", null, 1000));
+    _ = try store.send(try makeFifoMsg(testing.allocator, 3, "c", "g2", null, 1000));
+
+    // max=10 but only g1 head + g2 head delivered (b stays back behind a)
+    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    try testing.expectEqual(@as(usize, 2), got.len);
+    var bodies: [2][]const u8 = .{ got[0].msg.body, got[1].msg.body };
+    std.mem.sort([]const u8, &bodies, {}, struct {
+        fn lt(_: void, x: []const u8, y: []const u8) bool {
+            return std.mem.lessThan(u8, x, y);
+        }
+    }.lt);
+    try testing.expectEqualStrings("a", bodies[0]);
+    try testing.expectEqualStrings("c", bodies[1]);
+
+    // delete a (the g1 head); next receive yields b
+    for (got) |rm| {
+        if (std.mem.eql(u8, rm.msg.body, "a")) {
+            const h = try receipt.decode(rm.receipt_handle);
+            try store.deleteLease(h.msg_seq, h.lease_nonce);
+        }
+    }
+    const got2 = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    try testing.expectEqual(@as(usize, 1), got2.len);
+    try testing.expectEqualStrings("b", got2[0].msg.body);
+}
+
+test "fifo strict order within group" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    const bodies = [_][]const u8{ "m0", "m1", "m2", "m3", "m4" };
+    for (bodies, 0..) |b, i| {
+        _ = try store.send(try makeFifoMsg(testing.allocator, @intCast(i), b, "g1", null, 1000));
+    }
+    for (bodies) |expected| {
+        const got = try store.receive(env.arena.allocator(), 1, 30_000, 1000, null);
+        try testing.expectEqual(@as(usize, 1), got.len);
+        try testing.expectEqualStrings(expected, got[0].msg.body);
+        const h = try receipt.decode(got[0].receipt_handle);
+        try store.deleteLease(h.msg_seq, h.lease_nonce);
+    }
+}
+
+test "fifo expired lease returns to group front in order" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+    _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g1", null, 1000));
+
+    const got = try store.receive(env.arena.allocator(), 1, 1000, 1000, null); // lease "a" vis 2000
+    try testing.expectEqualStrings("a", got[0].msg.body);
+    store.tick(2001); // expire -> "a" back at front
+    const got2 = try store.receive(env.arena.allocator(), 1, 30_000, 3000, null);
+    try testing.expectEqualStrings("a", got2[0].msg.body); // still head, order preserved
+}
+
+test "fifo receive request attempt id replays batch" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+
+    _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+    _ = try store.send(try makeFifoMsg(testing.allocator, 2, "c", "g2", null, 1000));
+
+    const first = try store.receive(env.arena.allocator(), 10, 30_000, 1000, "attempt-1");
+    const replay = try store.receive(env.arena.allocator(), 10, 30_000, 1000, "attempt-1");
+    try testing.expectEqual(first.len, replay.len);
+    for (first, replay) |f, r| {
+        try testing.expectEqualSlices(u8, &f.msg.id, &r.msg.id);
+        try testing.expectEqualStrings(f.receipt_handle, r.receipt_handle);
+    }
+
+    // different attempt id, but groups are blocked -> empty batch
+    const other = try store.receive(env.arena.allocator(), 10, 30_000, 1000, "attempt-2");
+    try testing.expectEqual(@as(usize, 0), other.len);
+}
+
+test "fifo per message group throughput allows parallel groups" {
+    var env = try initFifoEnv(345_600, true);
+    const a = env.arena.allocator();
+    try env.q.attributes.put(a, "FifoThroughputLimit", .{ .string = "perMessageGroupId" });
+    try env.q.attributes.put(a, "DeduplicationScope", .{ .string = "messageGroup" });
+    defer env.deinit();
+    var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+    defer store.deinit();
+    try testing.expectEqual(fifo.Throughput.per_message_group, store.fifo.?.throughput);
+    try testing.expectEqual(fifo.Scope.message_group, store.fifo.?.scope);
+
+    _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+    _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g2", null, 1000));
+    const got = try store.receive(env.arena.allocator(), 10, 30_000, 1000, null);
+    try testing.expectEqual(@as(usize, 2), got.len); // both groups in flight
+}
+
+test "fifo recover rebuilds groups dedup and inflight" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    {
+        var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+        defer store.deinit();
+        _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+        _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g1", null, 1000));
+        _ = try store.send(try makeFifoMsg(testing.allocator, 3, "c", "g2", null, 1000));
+        // lease g1 head so it's in flight at restart
+        _ = try store.receive(env.arena.allocator(), 1, 60_000, 1000, null);
+    }
+    var store2 = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 2000), env.q, env.wal_path, env.snap_path, false);
+    defer store2.deinit();
+    try store2.recover();
+    try testing.expectEqual(@as(u64, 1), store2.countInFlight()); // "a" still leased (vis 61000)
+    try testing.expectEqual(@as(u64, 2), store2.countVisible()); // "b" pending + "c" pending
+    try testing.expectEqual(@as(u64, 4), store2.next_seq);
+
+    // dedup persists: re-send "a" body in g1 is suppressed
+    const r = try store2.send(try makeFifoMsg(testing.allocator, 9, "a", "g1", null, 2000));
+    try testing.expect(r.deduplicated);
+
+    // g1 is blocked (head "a" in flight); only g2 head "c" deliverable
+    const got = try store2.receive(env.arena.allocator(), 10, 30_000, 2000, null);
+    try testing.expectEqual(@as(usize, 1), got.len);
+    try testing.expectEqualStrings("c", got[0].msg.body);
+}
+
+test "fifo snapshot round trip" {
+    var env = try initFifoEnv(345_600, true);
+    defer env.deinit();
+    {
+        var store = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 1000), env.q, env.wal_path, env.snap_path, false);
+        defer store.deinit();
+        _ = try store.send(try makeFifoMsg(testing.allocator, 1, "a", "g1", null, 1000));
+        _ = try store.send(try makeFifoMsg(testing.allocator, 2, "b", "g2", null, 1000));
+        try store.writeSnapshot();
+        try store.wal.truncate(); // force recovery to rely on the snapshot
+    }
+    var store2 = try Store.init(testing.allocator, env.io, time_mod.Clock.fixed(0, 2000), env.q, env.wal_path, env.snap_path, false);
+    defer store2.deinit();
+    try store2.recover();
+    try testing.expectEqual(@as(u64, 2), store2.countVisible());
+    // dedup survived the snapshot
+    const r = try store2.send(try makeFifoMsg(testing.allocator, 9, "a", "g1", null, 2000));
+    try testing.expect(r.deduplicated);
 }

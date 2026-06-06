@@ -60,6 +60,26 @@ fn intAttr(q: *queue.Queue, name: []const u8, fallback: i64) i64 {
     };
 }
 
+fn boolAttr(q: *queue.Queue, name: []const u8, fallback: bool) bool {
+    const v = q.attributes.get(name) orelse return fallback;
+    return switch (v) {
+        .boolean => |b| b,
+        else => fallback,
+    };
+}
+
+// MessageGroupId / MessageDeduplicationId: up to 128 chars, alphanumeric plus
+// the SQS-permitted punctuation set.
+fn validFifoToken(s: []const u8) bool {
+    if (s.len == 0 or s.len > 128) return false;
+    for (s) |c| {
+        if (std.ascii.isAlphanumeric(c)) continue;
+        if (std.mem.indexOfScalar(u8, "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) != null) continue;
+        return false;
+    }
+    return true;
+}
+
 fn jsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const v = obj.get(key) orelse return null;
     return switch (v) {
@@ -92,7 +112,8 @@ const SendParams = struct {
     delay_seconds: ?i64 = null,
     attrs: []message.MessageAttribute = &.{},
     trace_header: ?[]const u8 = null,
-    has_group_id: bool = false,
+    group_id: ?[]const u8 = null,
+    dedup_id: ?[]const u8 = null,
 };
 
 fn parseSend(req: *const Request) !SendParams {
@@ -110,7 +131,8 @@ fn parseSend(req: *const Request) !SendParams {
                 .string => |s| std.fmt.parseInt(i64, s, 10) catch return error.InvalidParamValue,
                 else => return error.InvalidParamValue,
             };
-            p.has_group_id = obj.get("MessageGroupId") != null;
+            p.group_id = jsonString(obj, "MessageGroupId");
+            p.dedup_id = jsonString(obj, "MessageDeduplicationId");
             p.attrs = try parseMsgAttrsJson(arena, obj);
             p.trace_header = parseTraceJson(obj);
             return p;
@@ -122,7 +144,8 @@ fn parseSend(req: *const Request) !SendParams {
             if (try query_proto.getScalar(req.body, arena, "DelaySeconds")) |s| {
                 p.delay_seconds = std.fmt.parseInt(i64, s, 10) catch return error.InvalidParamValue;
             }
-            p.has_group_id = (try query_proto.getScalar(req.body, arena, "MessageGroupId")) != null;
+            p.group_id = try query_proto.getScalar(req.body, arena, "MessageGroupId");
+            p.dedup_id = try query_proto.getScalar(req.body, arena, "MessageDeduplicationId");
             p.attrs = try parseMsgAttrsQuery(req.body, arena);
             p.trace_header = try parseTraceQuery(req.body, arena);
             return p;
@@ -249,7 +272,19 @@ fn sendMessage(rt: *Runtime, req: *const Request) anyerror!Response {
     };
     const store = storeOf(q) orelse return errResp(rt, req, .internal_error);
 
-    if (p.has_group_id) return errMsg(rt, req, .invalid_parameter_value, "MessageGroupId is supported only for FIFO queues.");
+    const is_fifo = q.kind == .fifo;
+    if (is_fifo) {
+        const gid = p.group_id orelse return errMsg(rt, req, .invalid_parameter_value, "The request must contain the parameter MessageGroupId.");
+        if (!validFifoToken(gid)) return errMsg(rt, req, .invalid_parameter_value, "The value of the parameter MessageGroupId is invalid.");
+        if (p.dedup_id) |did| {
+            if (!validFifoToken(did)) return errMsg(rt, req, .invalid_parameter_value, "The value of the parameter MessageDeduplicationId is invalid.");
+        } else if (!boolAttr(q, "ContentBasedDeduplication", false)) {
+            return errMsg(rt, req, .invalid_parameter_value, "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly.");
+        }
+    } else {
+        if (p.group_id != null) return errMsg(rt, req, .invalid_parameter_value, "MessageGroupId is supported only for FIFO queues.");
+        if (p.dedup_id != null) return errMsg(rt, req, .invalid_parameter_value, "MessageDeduplicationId is supported only for FIFO queues.");
+    }
     if (p.body.len == 0) return errResp(rt, req, .missing_required_parameter);
 
     const max_size = intAttr(q, "MaximumMessageSize", 262144);
@@ -274,20 +309,31 @@ fn sendMessage(rt: *Runtime, req: *const Request) anyerror!Response {
 
     const now = rt.clock.nowMs();
     const msg = try buildStoreMessage(rt, p, md5_body, md5_attrs, now, now + delay * 1000);
-    errdefer msg.destroy(rt.gpa);
-    try store.send(msg);
+    const outcome = store.send(msg) catch |e| {
+        msg.destroy(rt.gpa);
+        return e;
+    };
+
+    const seq_str: ?[]const u8 = if (outcome.sequence_number) |sn|
+        try std.fmt.allocPrint(arena, "{d}", .{sn})
+    else
+        null;
 
     switch (req.protocol) {
         .json => {
             var w = json_proto.Writer.init(arena);
             try w.beginObject();
             try w.writeKey("MessageId");
-            try w.writeString(&msg.id);
+            try w.writeString(&outcome.id);
             try w.writeKey("MD5OfMessageBody");
-            try w.writeString(&md5_body);
-            if (md5_attrs) |m| {
+            try w.writeString(&outcome.md5_of_body);
+            if (outcome.md5_of_attrs) |m| {
                 try w.writeKey("MD5OfMessageAttributes");
                 try w.writeString(&m);
+            }
+            if (seq_str) |s| {
+                try w.writeKey("SequenceNumber");
+                try w.writeString(s);
             }
             try w.endObject();
             return jsonOk(w.finish());
@@ -297,9 +343,10 @@ fn sendMessage(rt: *Runtime, req: *const Request) anyerror!Response {
             try x.declaration();
             try x.open("SendMessageResponse");
             try x.open("SendMessageResult");
-            try x.element("MessageId", &msg.id);
-            try x.element("MD5OfMessageBody", &md5_body);
-            if (md5_attrs) |m| try x.element("MD5OfMessageAttributes", &m);
+            try x.element("MessageId", &outcome.id);
+            try x.element("MD5OfMessageBody", &outcome.md5_of_body);
+            if (outcome.md5_of_attrs) |m| try x.element("MD5OfMessageAttributes", &m);
+            if (seq_str) |s| try x.element("SequenceNumber", s);
             try x.close("SendMessageResult");
             try writeMetadata(&x, req);
             try x.close("SendMessageResponse");
@@ -346,6 +393,8 @@ fn buildStoreMessage(rt: *Runtime, p: SendParams, md5_body: [32]u8, md5_attrs: ?
         .delay_until_ms = delay_until_ms,
         .receive_count = 0,
         .first_received_at_ms = null,
+        .group_id = if (p.group_id) |g| try gpa.dupe(u8, g) else null,
+        .dedup_id = if (p.dedup_id) |d| try gpa.dupe(u8, d) else null,
         .trace_header = if (p.trace_header) |t| try gpa.dupe(u8, t) else null,
     };
     id.uuidV4(rt.rng, &msg.id);
@@ -362,6 +411,7 @@ const ReceiveParams = struct {
     visibility_timeout: ?i64 = null,
     attribute_names: []const []const u8 = &.{},
     message_attribute_names: []const []const u8 = &.{},
+    attempt_id: ?[]const u8 = null,
 };
 
 fn parseReceive(req: *const Request) !ReceiveParams {
@@ -384,6 +434,7 @@ fn parseReceive(req: *const Request) !ReceiveParams {
             };
             p.attribute_names = try jsonStringArray(arena, obj, "AttributeNames");
             p.message_attribute_names = try jsonStringArray(arena, obj, "MessageAttributeNames");
+            p.attempt_id = jsonString(obj, "ReceiveRequestAttemptId");
             return p;
         },
         .query => {
@@ -396,6 +447,7 @@ fn parseReceive(req: *const Request) !ReceiveParams {
             }
             p.attribute_names = try query_proto.getIndexedList(req.body, arena, "AttributeName.{i}");
             p.message_attribute_names = try query_proto.getIndexedList(req.body, arena, "MessageAttributeName.{i}");
+            p.attempt_id = try query_proto.getScalar(req.body, arena, "ReceiveRequestAttemptId");
             return p;
         },
     }
@@ -448,7 +500,7 @@ fn receiveMessage(rt: *Runtime, req: *const Request) anyerror!Response {
     if (vis_sec < 0 or vis_sec > 43200) return errMsg(rt, req, .invalid_parameter_value, "VisibilityTimeout must be between 0 and 43200.");
 
     const now = rt.clock.nowMs();
-    const received = try store.receive(arena, p.max, vis_sec * 1000, now);
+    const received = try store.receive(arena, p.max, vis_sec * 1000, now, p.attempt_id);
 
     switch (req.protocol) {
         .json => return jsonOk(try renderReceiveJson(arena, &p, received)),
@@ -597,6 +649,15 @@ fn collectSystemAttrs(arena: std.mem.Allocator, names: []const []const u8, m: *c
     }
     if ((all or hasName(names, "AWSTraceHeader"))) {
         if (m.trace_header) |t| try out.append(arena, .{ .name = "AWSTraceHeader", .value = t });
+    }
+    if (m.group_id) |gid| {
+        if (all or hasName(names, "MessageGroupId")) try out.append(arena, .{ .name = "MessageGroupId", .value = gid });
+        if (all or hasName(names, "SequenceNumber")) {
+            try out.append(arena, .{ .name = "SequenceNumber", .value = try std.fmt.allocPrint(arena, "{d}", .{m.seq}) });
+        }
+        if (m.dedup_id) |d| {
+            if (all or hasName(names, "MessageDeduplicationId")) try out.append(arena, .{ .name = "MessageDeduplicationId", .value = d });
+        }
     }
     return out.items;
 }

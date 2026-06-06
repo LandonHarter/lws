@@ -10,6 +10,7 @@ pub const Kind = enum(u8) {
     change_vis = 5,
     purge = 6,
     drop_retention = 7,
+    dedup_cache = 8,
 };
 
 pub const ParseError = error{ BadMagic, BadCrc, BadKind };
@@ -99,7 +100,7 @@ pub const Iterator = struct {
         const payload = self.buf[payload_start..payload_end];
         const stored_crc = std.mem.readInt(u32, self.buf[payload_end..][0..4], .little);
         if (stored_crc != crcOf(kind_byte, payload)) return ParseError.BadCrc;
-        if (kind_byte < 1 or kind_byte > 7) return ParseError.BadKind;
+        if (kind_byte < 1 or kind_byte > 8) return ParseError.BadKind;
         const kind: Kind = @enumFromInt(kind_byte);
         self.pos = payload_end + trailer_len;
         return .{ .kind = kind, .payload = payload };
