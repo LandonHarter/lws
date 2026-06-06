@@ -14,6 +14,13 @@ pub const registry = [_]ServiceSpec{
         .default_port = 9324,
         .description = "Simple Queue Service",
     },
+    .{
+        .name = "s3",
+        .dir = "services/s3",
+        .bin = "s3",
+        .default_port = 9000,
+        .description = "Simple Storage Service",
+    },
 };
 
 pub fn find(name: []const u8) ?ServiceSpec {

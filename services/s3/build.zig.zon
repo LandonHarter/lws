@@ -1,0 +1,16 @@
+.{
+    .name = .s3,
+    .version = "0.0.0",
+    .fingerprint = 0xfa1b59dcc83ebacf,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .server = .{ .path = "../../shared/server" },
+        .config = .{ .path = "../../shared/config" },
+        .core = .{ .path = "../../shared/core" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

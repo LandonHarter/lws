@@ -131,6 +131,7 @@ Available services — see each service's README for launch flags, supported API
 | Service | Default port | Description | Docs |
 |---|---|---|---|
 | `sqs` | `9324` | Simple Queue Service — AWS SQS-compatible queues (standard + FIFO) | [services/sqs/README.md](services/sqs/README.md) |
+| `s3`  | `9000` | Simple Storage Service — AWS S3-compatible buckets and objects | [services/s3/README.md](services/s3/README.md) |
 
 ---
 

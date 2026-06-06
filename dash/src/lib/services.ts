@@ -1,4 +1,13 @@
-import { Boxes, Inbox, Layers, Server, type LucideIcon } from "lucide-react";
+import {
+  Boxes,
+  Database,
+  HardDrive,
+  Inbox,
+  Layers,
+  Package,
+  Server,
+  type LucideIcon,
+} from "lucide-react";
 import { z } from "zod";
 
 export type Tone = "visible" | "flight" | "delayed" | "ok" | "down" | "primary";
@@ -58,6 +67,32 @@ function sqsHeadline(raw: unknown): ServiceStat[] {
   ];
 }
 
+export const s3StatsSchema = z.object({
+  service: z.string(),
+  uptime_ms: z.number(),
+  buckets: z.number(),
+  objects: z.number(),
+  bytes: z.number(),
+  detail: z.array(
+    z.object({
+      name: z.string(),
+      objects: z.number(),
+      bytes: z.number(),
+    }),
+  ),
+});
+
+export type S3Stats = z.infer<typeof s3StatsSchema>;
+
+function s3Headline(raw: unknown): ServiceStat[] {
+  const p = s3StatsSchema.safeParse(raw);
+  if (!p.success) return [];
+  return [
+    { key: "buckets", label: "Buckets", value: p.data.buckets, tone: "flight", icon: Package },
+    { key: "objects", label: "Objects", value: p.data.objects, tone: "visible", icon: Database },
+  ];
+}
+
 const REGISTRY: Record<string, ServiceMeta> = {
   sqs: {
     id: "sqs",
@@ -66,6 +101,14 @@ const REGISTRY: Record<string, ServiceMeta> = {
     blurb: "Fully-managed message queues, running on local metal.",
     icon: Boxes,
     headline: sqsHeadline,
+  },
+  s3: {
+    id: "s3",
+    label: "S3",
+    title: "Simple Storage Service",
+    blurb: "Object storage buckets, running on local metal.",
+    icon: HardDrive,
+    headline: s3Headline,
   },
 };
 

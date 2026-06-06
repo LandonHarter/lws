@@ -163,6 +163,13 @@ const REGISTRY: Record<string, ServiceConfigSpec> = {
     queueNameLabel: "Queue name",
     fields: SQS_FIELDS,
   },
+  s3: {
+    id: "s3",
+    defaultPort: 9000,
+    fifoField: null,
+    queueNameLabel: "Bucket name",
+    fields: [],
+  },
 };
 
 export function serviceConfigSpec(id: string): ServiceConfigSpec | null {
