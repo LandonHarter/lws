@@ -35,6 +35,20 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(bucket_config_tests).step);
 
+    // registry.zig is the test root for the storage layer; it transitively
+    // imports persist/* and store/*, so their tests run here too. The subdir
+    // files cannot be standalone roots because their `../` imports escape the
+    // module path rooted at the file's own directory.
+    const registry_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/registry.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    registry_tests.root_module.addImport("core", core_dep.module("core"));
+    test_step.dependOn(&b.addRunArtifact(registry_tests).step);
+
     const run_step = b.step("run", "Run the s3 service");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
