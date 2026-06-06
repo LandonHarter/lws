@@ -11,6 +11,8 @@ const queue_attrs = @import("handlers/queue_attrs.zig");
 const messages = @import("handlers/messages.zig");
 const batch = @import("handlers/batch.zig");
 const move_tasks = @import("handlers/move_tasks.zig");
+const tags = @import("handlers/tags.zig");
+const permissions = @import("handlers/permissions.zig");
 const move_task = @import("store/move_task.zig");
 const Ticker = @import("ticker.zig").Ticker;
 
@@ -123,6 +125,8 @@ pub fn main(init: std.process.Init) !void {
     try messages.register(init.gpa);
     try batch.register(init.gpa);
     try move_tasks.register(init.gpa);
+    try tags.register(init.gpa);
+    try permissions.register(init.gpa);
 
     if (cfg.config_path.len > 0) {
         const loaded = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);

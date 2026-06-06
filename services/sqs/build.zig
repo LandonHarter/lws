@@ -129,6 +129,7 @@ pub fn build(b: *std.Build) void {
     const module_test_files = [_][]const u8{
         "src/arn.zig",
         "src/errors.zig",
+        "src/policy.zig",
     };
     for (module_test_files) |path| {
         const t = b.addTest(.{

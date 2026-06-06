@@ -3,6 +3,7 @@ const queue = @import("queue.zig");
 const config = @import("config");
 const attrs = @import("attrs.zig");
 const queue_dir = @import("persist/queue_dir.zig");
+const policy = @import("policy.zig");
 const message_store = @import("store/message_store.zig");
 const time = @import("core").time;
 
@@ -211,6 +212,127 @@ pub const Registry = struct {
             .created_at = q.created_at,
             .last_modified_at = now,
         }, self.fsync);
+    }
+
+    // Rewrites meta.json for `q` from its current in-memory state. Caller holds
+    // the registry mutex (and ideally q.mutex). Uses a scratch arena in gpa.
+    fn persistMeta(self: *Registry, q: *queue.Queue) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const sa = scratch.allocator();
+        const dir = try queue_dir.dirPath(sa, self.data_dir, q.id);
+        try queue_dir.writeMeta(sa, self.io, dir, .{
+            .queue_id = q.id,
+            .name = q.name,
+            .kind = q.kind,
+            .attributes = q.attributes,
+            .tags = q.tags,
+            .created_at = q.created_at,
+            .last_modified_at = q.last_modified_at,
+        }, self.fsync);
+    }
+
+    // Merges `new_tags` into the queue's tag set (overwriting existing keys),
+    // bumps last_modified, and rewrites meta.json. Keys/values are duped into
+    // the queue arena. Validation is the caller's responsibility.
+    pub fn addTags(self: *Registry, name: []const u8, new_tags: *const queue.TagMap) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const q = self.queues_by_name.get(name) orelse return error.QueueDoesNotExist;
+        q.mutex.lockUncancelable(self.io);
+        defer q.mutex.unlock(self.io);
+
+        const a = q.arena.allocator();
+        var it = new_tags.iterator();
+        while (it.next()) |e| {
+            const val_dup = try a.dupe(u8, e.value_ptr.*);
+            if (q.tags.getPtr(e.key_ptr.*)) |slot| {
+                slot.* = val_dup;
+            } else {
+                try q.tags.put(a, try a.dupe(u8, e.key_ptr.*), val_dup);
+            }
+        }
+        q.last_modified_at = self.clock.nowSec();
+        try self.persistMeta(q);
+    }
+
+    // Removes the named tag keys (missing keys are ignored), bumps
+    // last_modified, and rewrites meta.json.
+    pub fn removeTags(self: *Registry, name: []const u8, keys: []const []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const q = self.queues_by_name.get(name) orelse return error.QueueDoesNotExist;
+        q.mutex.lockUncancelable(self.io);
+        defer q.mutex.unlock(self.io);
+
+        for (keys) |k| _ = q.tags.orderedRemove(k);
+        q.last_modified_at = self.clock.nowSec();
+        try self.persistMeta(q);
+    }
+
+    // Read-modify-writes the queue's Policy attribute, appending a statement
+    // keyed by `label`. Returns error.DuplicateLabel if a statement with the
+    // same Sid already exists. Statement parts (principal/resource ARNs) are
+    // built by the caller. Rewrites meta.json.
+    pub fn addPermission(
+        self: *Registry,
+        name: []const u8,
+        stmt: policy.NewStatement,
+        policy_id: []const u8,
+    ) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const q = self.queues_by_name.get(name) orelse return error.QueueDoesNotExist;
+        q.mutex.lockUncancelable(self.io);
+        defer q.mutex.unlock(self.io);
+
+        const a = q.arena.allocator();
+        const existing: ?[]const u8 = if (q.attributes.get("Policy")) |v| switch (v) {
+            .json => |j| j,
+            .string => |s| s,
+            else => null,
+        } else null;
+
+        const new_policy = try policy.addStatement(a, existing, policy_id, stmt);
+        if (q.attributes.getPtr("Policy")) |slot| {
+            slot.* = .{ .json = new_policy };
+        } else {
+            try q.attributes.put(a, try a.dupe(u8, "Policy"), .{ .json = new_policy });
+        }
+        q.last_modified_at = self.clock.nowSec();
+        try self.persistMeta(q);
+    }
+
+    // Removes the statement keyed by `label` from the Policy attribute. Returns
+    // error.StatementNotFound if no such statement (or no policy) exists. When
+    // the last statement is removed the Policy attribute is cleared entirely.
+    pub fn removePermission(self: *Registry, name: []const u8, label: []const u8) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const q = self.queues_by_name.get(name) orelse return error.QueueDoesNotExist;
+        q.mutex.lockUncancelable(self.io);
+        defer q.mutex.unlock(self.io);
+
+        const existing: ?[]const u8 = if (q.attributes.get("Policy")) |v| switch (v) {
+            .json => |j| j,
+            .string => |s| s,
+            else => null,
+        } else null;
+        const cur = existing orelse return error.StatementNotFound;
+
+        const a = q.arena.allocator();
+        const next = try policy.removeStatement(a, cur, label);
+        if (next) |np| {
+            if (q.attributes.getPtr("Policy")) |slot| slot.* = .{ .json = np };
+        } else {
+            _ = q.attributes.orderedRemove("Policy");
+        }
+        q.last_modified_at = self.clock.nowSec();
+        try self.persistMeta(q);
     }
 
     pub fn purge(self: *Registry, name: []const u8) !void {
@@ -639,6 +761,103 @@ test "purge cooldown" {
     reg.clock = time.Clock.fixed(1000 + PurgeCooldownSeconds, 0);
     try reg.purge("x");
     try testing.expectError(error.QueueDoesNotExist, reg.purge("nope"));
+}
+
+test "addTags then removeTags persists and survives recover" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [64]u8 = undefined;
+    const data_dir = tmpDataDir(&dbuf, &tmp);
+
+    var raw: queue.TagMap = .empty;
+    defer raw.deinit(testing.allocator);
+
+    {
+        var prng = std.Random.DefaultPrng.init(30);
+        var reg = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng);
+        defer reg.deinit();
+
+        var tags: queue.TagMap = .empty;
+        defer tags.deinit(testing.allocator);
+        _ = try reg.create("x", &raw, &tags);
+
+        var add: queue.TagMap = .empty;
+        defer add.deinit(testing.allocator);
+        try add.put(testing.allocator, "env", "dev");
+        try add.put(testing.allocator, "team", "core");
+        try reg.addTags("x", &add);
+        try testing.expectEqual(@as(usize, 2), reg.get("x").?.tags.count());
+        try testing.expectEqualStrings("dev", reg.get("x").?.tags.get("env").?);
+
+        // overwrite existing key
+        var ovr: queue.TagMap = .empty;
+        defer ovr.deinit(testing.allocator);
+        try ovr.put(testing.allocator, "env", "prod");
+        try reg.addTags("x", &ovr);
+        try testing.expectEqualStrings("prod", reg.get("x").?.tags.get("env").?);
+
+        try reg.removeTags("x", &.{"team"});
+        try testing.expect(reg.get("x").?.tags.get("team") == null);
+        try testing.expectError(error.QueueDoesNotExist, reg.addTags("nope", &add));
+    }
+
+    var prng2 = std.Random.DefaultPrng.init(31);
+    var reg2 = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng2);
+    defer reg2.deinit();
+    try reg2.recover();
+    try testing.expectEqualStrings("prod", reg2.get("x").?.tags.get("env").?);
+    try testing.expect(reg2.get("x").?.tags.get("team") == null);
+}
+
+test "addPermission then removePermission round-trips through recover" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dbuf: [64]u8 = undefined;
+    const data_dir = tmpDataDir(&dbuf, &tmp);
+
+    var raw: queue.TagMap = .empty;
+    defer raw.deinit(testing.allocator);
+
+    {
+        var prng = std.Random.DefaultPrng.init(32);
+        var reg = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng);
+        defer reg.deinit();
+        var tags: queue.TagMap = .empty;
+        defer tags.deinit(testing.allocator);
+        _ = try reg.create("x", &raw, &tags);
+
+        const stmt: policy.NewStatement = .{
+            .sid = "dev-rw",
+            .principal_arns = &.{"arn:aws:iam::111122223333:root"},
+            .action_arns = &.{ "SQS:SendMessage", "SQS:ReceiveMessage" },
+            .resource = "arn:aws:sqs:us-east-1:000000000000:x",
+        };
+        try reg.addPermission("x", stmt, "arn:aws:sqs:us-east-1:000000000000:x/SQSDefaultPolicy");
+        try testing.expect(reg.get("x").?.attributes.get("Policy") != null);
+
+        // duplicate label rejected
+        try testing.expectError(error.DuplicateLabel, reg.addPermission("x", stmt, "pid"));
+
+        // remove non-existent label
+        try testing.expectError(error.StatementNotFound, reg.removePermission("x", "nope"));
+    }
+
+    var prng2 = std.Random.DefaultPrng.init(33);
+    var reg2 = testRegistry(io, data_dir, time.Clock.fixed(1000, 0), &prng2);
+    defer reg2.deinit();
+    try reg2.recover();
+    const pol = reg2.get("x").?.attributes.get("Policy").?.json;
+    try testing.expect(std.mem.indexOf(u8, pol, "dev-rw") != null);
+
+    // remove the only statement clears the Policy attribute
+    try reg2.removePermission("x", "dev-rw");
+    try testing.expect(reg2.get("x").?.attributes.get("Policy") == null);
 }
 
 test "dlqSourceNames matches RedrivePolicy target" {
