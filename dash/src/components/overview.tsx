@@ -9,6 +9,7 @@ import { fmtNum, fmtTime, fmtUptime } from "@/lib/format";
 import { aggregateStats, serviceMeta, type ServiceStat } from "@/lib/services";
 import { cn } from "@/lib/utils";
 import { MetricTile, SectionLabel, StatusDot } from "@/components/bits";
+import { InstanceActions } from "@/components/instance-actions";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,15 +28,16 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function InstanceRow({ inst }: { inst: EnrichedInstance }) {
+function InstanceRow({ inst, onRefresh }: { inst: EnrichedInstance; onRefresh: () => void }) {
   const running = inst.status === "running";
+  const stopped = inst.status === "stopped";
   const stats = serviceMeta(inst.service).headline(inst.stats).slice(0, 2);
   return (
     <Link
       href={`/${inst.service}/${encodeURIComponent(inst.name)}`}
       className="group grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-md border border-border/60 bg-background/30 px-4 py-3 transition-all hover:border-foreground/25 hover:bg-accent/40"
     >
-      <StatusDot tone={running ? "ok" : "down"} ping={running} />
+      <StatusDot tone={running ? "ok" : stopped ? "idle" : "down"} ping={running} />
 
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -44,7 +46,11 @@ function InstanceRow({ inst }: { inst: EnrichedInstance }) {
             variant="outline"
             className={cn(
               "h-4 px-1.5 font-mono text-[10px] uppercase tracking-wider",
-              running ? "border-ok/30 bg-ok/10 text-ok" : "border-down/30 bg-down/10 text-down",
+              running
+                ? "border-ok/30 bg-ok/10 text-ok"
+                : stopped
+                  ? "border-muted-foreground/30 bg-muted/40 text-muted-foreground"
+                  : "border-down/30 bg-down/10 text-down",
             )}
           >
             {inst.status}
@@ -52,7 +58,7 @@ function InstanceRow({ inst }: { inst: EnrichedInstance }) {
         </div>
         <div className="mt-1 flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
           <span className="text-foreground/70">127.0.0.1:{inst.port}</span>
-          <span>pid {inst.pid}</span>
+          {running && <span>pid {inst.pid}</span>}
           {running && inst.uptimeMs !== null && <span>up {fmtUptime(inst.uptimeMs)}</span>}
         </div>
       </div>
@@ -87,10 +93,12 @@ function ServiceCard({
   serviceId,
   instances,
   index,
+  onRefresh,
 }: {
   serviceId: string;
   instances: EnrichedInstance[];
   index: number;
+  onRefresh: () => void;
 }) {
   const meta = serviceMeta(serviceId);
   const Icon = meta.icon;
@@ -140,7 +148,9 @@ function ServiceCard({
             no instances
           </div>
         ) : (
-          instances.map((inst) => <InstanceRow key={`${inst.service}/${inst.name}`} inst={inst} />)
+          instances.map((inst) => (
+            <InstanceRow key={`${inst.service}/${inst.name}`} inst={inst} onRefresh={onRefresh} />
+          ))
         )}
       </div>
     </Card>
@@ -238,6 +248,7 @@ export function Overview() {
                   serviceId={svc}
                   index={idx}
                   instances={data.instances.filter((i) => i.service === svc)}
+                  onRefresh={refresh}
                 />
               ))}
             </div>

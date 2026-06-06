@@ -112,6 +112,7 @@ export function ServiceIndex({ service }: { service: string }) {
               <TableBody>
                 {instances.map((inst) => {
                   const live = inst.status === "running";
+                  const stopped = inst.status === "stopped";
                   const stats = serviceMeta(service).headline(inst.stats);
                   const byLabel = new Map(stats.map((s) => [s.label, s.value]));
                   return (
@@ -123,7 +124,7 @@ export function ServiceIndex({ service }: { service: string }) {
                       className="cursor-pointer border-border/60"
                     >
                       <TableCell className="px-5">
-                        <StatusDot tone={live ? "ok" : "down"} ping={live} />
+                        <StatusDot tone={live ? "ok" : stopped ? "idle" : "down"} ping={live} />
                       </TableCell>
                       <TableCell className="px-5 font-mono text-sm text-foreground">
                         {inst.name}

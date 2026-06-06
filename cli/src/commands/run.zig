@@ -95,6 +95,16 @@ fn run(ctx: zli.CommandContext) !void {
 
     try std.Io.Dir.createDirPath(.cwd(), io, data_dir);
 
+    var effective_config: []const u8 = config_path;
+    const persisted_config = try std.fs.path.join(allocator, &.{ data_dir, "config.json" });
+    defer allocator.free(persisted_config);
+    if (config_path.len > 0) {
+        const raw_config = try std.Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .unlimited);
+        defer allocator.free(raw_config);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = persisted_config, .data = raw_config });
+        effective_config = persisted_config;
+    }
+
     const log_path = try std.fs.path.join(allocator, &.{ data_dir, "output.log" });
     defer allocator.free(log_path);
 
@@ -107,8 +117,8 @@ fn run(ctx: zli.CommandContext) !void {
     var argv: std.ArrayListUnmanaged([]const u8) = .empty;
     defer argv.deinit(allocator);
     try argv.appendSlice(allocator, &.{ bin_path, "--port", port_str, "--data-dir", data_dir });
-    if (config_path.len > 0) {
-        try argv.appendSlice(allocator, &.{ "--config", config_path });
+    if (effective_config.len > 0) {
+        try argv.appendSlice(allocator, &.{ "--config", effective_config });
     }
 
     const child = try std.process.spawn(io, .{
@@ -121,7 +131,7 @@ fn run(ctx: zli.CommandContext) !void {
     });
     const pid = child.id orelse return error.SpawnFailed;
 
-    try instances.write(allocator, io, root, spec.name, instance, pid, port);
+    try instances.write(allocator, io, root, spec.name, instance, pid, port, .running);
 
     try out.print("started {s} instance '{s}' (pid {d}) on port {d}\n", .{ spec.name, instance, pid, port });
     try out.print("logs: {s}\n", .{log_path});

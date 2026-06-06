@@ -221,7 +221,7 @@ export const lwsRouter = router({
       };
     }),
 
-  kill: publicProcedure
+  stop: publicProcedure
     .input(
       z.object({
         name: z.string().min(1),
@@ -230,7 +230,39 @@ export const lwsRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const args = ["kill", input.name];
+      const args = ["stop", input.name];
+      if (input.service !== undefined) args.push("--service", input.service);
+      if (input.force) args.push("--force");
+
+      const { stdout, stderr } = await lws(args);
+      return { stdout, stderr };
+    }),
+
+  start: publicProcedure
+    .input(
+      z.object({
+        name: z.string().min(1),
+        service: z.string().min(1).optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const args = ["start", input.name];
+      if (input.service !== undefined) args.push("--service", input.service);
+
+      const { stdout, stderr } = await lws(args);
+      return { stdout, stderr };
+    }),
+
+  delete: publicProcedure
+    .input(
+      z.object({
+        name: z.string().min(1),
+        service: z.string().min(1).optional(),
+        force: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const args = ["delete", input.name];
       if (input.service !== undefined) args.push("--service", input.service);
       if (input.force) args.push("--force");
 

@@ -1,11 +1,17 @@
 const std = @import("std");
 const Io = std.Io;
 
+pub const State = enum {
+    running,
+    stopped,
+};
+
 pub const Instance = struct {
     service: []const u8,
     name: []const u8,
     pid: std.posix.pid_t,
     port: u16,
+    state: State,
     file: []const u8,
 
     pub fn deinit(self: Instance, allocator: std.mem.Allocator) void {
@@ -35,6 +41,7 @@ pub fn write(
     name: []const u8,
     pid: std.posix.pid_t,
     port: u16,
+    state: State,
 ) !void {
     const dir = try regDir(allocator, root);
     defer allocator.free(dir);
@@ -45,8 +52,8 @@ pub fn write(
 
     const content = try std.fmt.allocPrint(
         allocator,
-        "service={s}\nname={s}\npid={d}\nport={d}\n",
-        .{ service, name, pid, port },
+        "service={s}\nname={s}\npid={d}\nport={d}\nstate={s}\n",
+        .{ service, name, pid, port, @tagName(state) },
     );
     defer allocator.free(content);
 
@@ -101,6 +108,7 @@ fn parse(allocator: std.mem.Allocator, raw: []const u8, file: []const u8) !Insta
     var name: ?[]const u8 = null;
     var pid: ?std.posix.pid_t = null;
     var port: ?u16 = null;
+    var state: State = .running;
 
     var lines = std.mem.tokenizeScalar(u8, raw, '\n');
     while (lines.next()) |line| {
@@ -115,6 +123,8 @@ fn parse(allocator: std.mem.Allocator, raw: []const u8, file: []const u8) !Insta
             pid = try std.fmt.parseInt(std.posix.pid_t, val, 10);
         } else if (std.mem.eql(u8, key, "port")) {
             port = try std.fmt.parseInt(u16, val, 10);
+        } else if (std.mem.eql(u8, key, "state")) {
+            state = std.meta.stringToEnum(State, val) orelse .running;
         }
     }
 
@@ -123,6 +133,7 @@ fn parse(allocator: std.mem.Allocator, raw: []const u8, file: []const u8) !Insta
         .name = try allocator.dupe(u8, name orelse return error.MissingField),
         .pid = pid orelse return error.MissingField,
         .port = port orelse return error.MissingField,
+        .state = state,
         .file = file,
     };
 }
@@ -133,6 +144,7 @@ pub fn freeList(allocator: std.mem.Allocator, items: []Instance) void {
 }
 
 pub fn alive(pid: std.posix.pid_t) bool {
+    if (pid <= 0) return false;
     std.posix.kill(pid, @enumFromInt(0)) catch |err| switch (err) {
         error.ProcessNotFound => return false,
         else => return true,

@@ -10,6 +10,7 @@ import { fmtUptime } from "@/lib/format";
 import { serviceMeta } from "@/lib/services";
 import { cn } from "@/lib/utils";
 import { SectionLabel, StatusDot } from "@/components/bits";
+import { InstanceActions } from "@/components/instance-actions";
 import { ServiceDetail } from "@/components/service-views";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -36,7 +37,7 @@ function Chip({ icon: Icon, children }: { icon: LucideIcon; children: React.Reac
 export function ResourceDetail({ service, id }: { service: string; id: string }) {
   const meta = serviceMeta(service);
   const now = useNow(1000);
-  const { data, error, loading, updatedAt } = usePoll(
+  const { data, error, loading, updatedAt, refresh } = usePoll(
     () => trpc.lws.info.query({ name: id, service }),
     2000,
   );
@@ -101,6 +102,14 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
             <StatusDot tone={running ? "ok" : "down"} ping={running} />
             {running ? "running" : "dead"}
           </span>
+          <div className="ml-auto">
+            <InstanceActions
+              service={service}
+              name={info.name}
+              status={running ? "running" : "stopped"}
+              onDone={refresh}
+            />
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge

@@ -30,7 +30,10 @@ fn list(ctx: zli.CommandContext) !void {
 
     try out.print("{s:<10} {s:<24} {s:<8} {s:<6} {s}\n", .{ "SERVICE", "NAME", "PID", "PORT", "STATUS" });
     for (items) |inst| {
-        const status = if (instances.alive(inst.pid)) "running" else "dead";
+        const status = switch (inst.state) {
+            .stopped => "stopped",
+            .running => if (instances.alive(inst.pid)) "running" else "dead",
+        };
         const pid_u: u32 = @intCast(inst.pid);
         try out.print("{s:<10} {s:<24} {d:<8} {d:<6} {s}\n", .{ inst.service, inst.name, pid_u, inst.port, status });
     }
