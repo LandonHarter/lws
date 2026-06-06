@@ -16,6 +16,7 @@ pub const Runtime = struct {
     fsync: bool = true,
     logger: log.Logger = .{},
     rng: std.Random,
+    started_at_ms: i64 = 0,
     registry: *@import("registry.zig").Registry = undefined,
     move_manager: *move_task.Manager = undefined,
 };

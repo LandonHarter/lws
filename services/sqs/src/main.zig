@@ -115,6 +115,7 @@ pub fn main(init: std.process.Init) !void {
         .fsync = cfg.fsync,
         .logger = .{ .threshold = log.Level.parse(cfg.log_level).? },
         .rng = prng.random(),
+        .started_at_ms = clock.nowMs(),
         .registry = &reg,
         .move_manager = &move_manager,
     };

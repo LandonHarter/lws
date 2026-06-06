@@ -7,6 +7,7 @@ const list = @import("commands/list.zig");
 const kill = @import("commands/kill.zig");
 const logs = @import("commands/logs.zig");
 const config = @import("commands/config.zig");
+const info = @import("commands/info.zig");
 
 pub fn build(init_options: zli.InitOptions) !*zli.Command {
     const root = try zli.Command.init(init_options, .{
@@ -22,6 +23,7 @@ pub fn build(init_options: zli.InitOptions) !*zli.Command {
         try kill.register(init_options),
         try logs.register(init_options),
         try config.register(init_options),
+        try info.register(init_options),
     });
 
     return root;

@@ -408,6 +408,42 @@ pub const Registry = struct {
         return std.mem.lessThan(u8, a, b);
     }
 
+    pub const QueueStat = struct {
+        name: []const u8,
+        kind: queue.Kind,
+        visible: u64,
+        in_flight: u64,
+        delayed: u64,
+    };
+
+    // Snapshots per-queue message counts. Names are duped into gpa_out; the
+    // returned slice is sorted by name. Caller frees via gpa_out.
+    pub fn stats(self: *Registry, gpa_out: std.mem.Allocator) ![]QueueStat {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+
+        const out = try gpa_out.alloc(QueueStat, self.queues_by_name.count());
+        var i: usize = 0;
+        for (self.queues_by_name.keys(), self.queues_by_name.values()) |name, q| {
+            const s = q.store orelse continue;
+            out[i] = .{
+                .name = try gpa_out.dupe(u8, name),
+                .kind = q.kind,
+                .visible = s.vtable.count_visible(s.ctx),
+                .in_flight = s.vtable.count_in_flight(s.ctx),
+                .delayed = s.vtable.count_delayed(s.ctx),
+            };
+            i += 1;
+        }
+        const slice = out[0..i];
+        std.mem.sort(QueueStat, slice, {}, lessThanStat);
+        return slice;
+    }
+
+    fn lessThanStat(_: void, a: QueueStat, b: QueueStat) bool {
+        return std.mem.lessThan(u8, a.name, b.name);
+    }
+
     pub fn recover(self: *Registry) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);

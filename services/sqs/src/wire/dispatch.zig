@@ -5,6 +5,7 @@ const envelope = @import("envelope.zig");
 const handler_mod = @import("handler.zig");
 const Handler = handler_mod.Handler;
 const Response = handler_mod.Response;
+const stats = @import("stats.zig");
 
 pub const Table = struct {
     actions: std.StringArrayHashMapUnmanaged(Handler) = .empty,
@@ -25,6 +26,10 @@ pub fn handleHttp(ctx: *server.Context) !void {
 
     if (ctx.method() == .GET and std.mem.eql(u8, ctx.path(), "/health")) {
         return ctx.json(.ok, "{\"status\":\"ok\"}");
+    }
+
+    if (ctx.method() == .GET and std.mem.eql(u8, ctx.path(), "/stats")) {
+        return stats.handle(ctx, rt);
     }
 
     var arena = std.heap.ArenaAllocator.init(rt.gpa);
