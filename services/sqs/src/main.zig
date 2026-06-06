@@ -2,6 +2,11 @@ const std = @import("std");
 const server = @import("server");
 const queue = @import("queue_config.zig");
 const log = @import("core").log;
+const time = @import("core").time;
+const Runtime = @import("runtime.zig").Runtime;
+const dispatch = @import("wire/dispatch.zig");
+const registry_mod = @import("registry.zig");
+const queue_lifecycle = @import("handlers/queue_lifecycle.zig");
 
 const Config = struct {
     port: u16 = 9324,
@@ -14,11 +19,6 @@ const Config = struct {
     host: []const u8 = "",
     log_level: []const u8 = "info",
     fsync: bool = true,
-};
-
-const State = struct {
-    cfg: Config,
-    queue: ?queue.QueueConfig,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -83,23 +83,59 @@ pub fn main(init: std.process.Init) !void {
         cfg.host = try std.fmt.allocPrint(arena.allocator(), "{s}:{d}", .{ cfg.bind, cfg.port });
     }
 
-    var state: State = .{ .cfg = cfg, .queue = null };
-    if (cfg.config_path.len > 0) {
-        const q = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);
-        state.queue = q;
-        std.debug.print("sqs: loaded {s} queue with {d} attribute(s) from '{s}'\n", .{ @tagName(q.kind), q.attributes.count(), cfg.config_path });
-    }
-
     std.debug.print("sqs listening on {s}:{d} (host '{s}', account {s}, region {s}), data-dir '{s}'\n", .{ cfg.bind, cfg.port, cfg.host, cfg.account_id, cfg.region, cfg.data_dir });
+
+    const clock = time.Clock.real(init.io);
+    const seed: u64 = @bitCast(clock.nowMs());
+    var prng = std.Random.DefaultPrng.init(seed);
+
+    var reg = registry_mod.Registry.init(init.gpa, init.io, cfg.data_dir, cfg.fsync, clock, prng.random());
+    defer reg.deinit();
+    try reg.recover();
+
+    var rt: Runtime = .{
+        .gpa = init.gpa,
+        .io = init.io,
+        .clock = clock,
+        .account = cfg.account_id,
+        .region = cfg.region,
+        .host = cfg.host,
+        .data_dir = cfg.data_dir,
+        .fsync = cfg.fsync,
+        .logger = .{ .threshold = log.Level.parse(cfg.log_level).? },
+        .rng = prng.random(),
+        .registry = &reg,
+    };
+
+    try dispatch.table.register(init.gpa, "Echo", dispatch.echo);
+    try queue_lifecycle.register(init.gpa);
+
+    if (cfg.config_path.len > 0) {
+        const loaded = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);
+        const name = loaded.name orelse std.fs.path.stem(std.fs.path.basename(cfg.config_path));
+        if (reg.get(name) == null) {
+            var raw_attrs: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+            var it = loaded.attributes.iterator();
+            while (it.next()) |e| {
+                const raw = switch (e.value_ptr.*) {
+                    .integer => |n| try std.fmt.allocPrint(arena.allocator(), "{d}", .{n}),
+                    .boolean => |b| if (b) "true" else "false",
+                    .string => |s| s,
+                    .json => |j| j,
+                };
+                try raw_attrs.put(arena.allocator(), e.key_ptr.*, raw);
+            }
+            var no_tags: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+            _ = reg.create(name, &raw_attrs, &no_tags) catch |err| {
+                std.debug.print("sqs: failed to pre-seed queue '{s}': {s}\n", .{ name, @errorName(err) });
+                std.process.exit(1);
+            };
+            std.debug.print("sqs: pre-seeded queue '{s}' ({s})\n", .{ name, @tagName(loaded.kind) });
+        }
+    }
 
     var srv = try server.Server.init(init.io, init.gpa, .{ .port = cfg.port, .host = cfg.bind });
     defer srv.deinit();
 
-    try srv.run(handle, &state);
-}
-
-fn handle(ctx: *server.Context) !void {
-    if (ctx.method() == .GET and std.mem.eql(u8, ctx.path(), "/health")) {
-        return ctx.json(.ok, "{\"status\":\"ok\"}");
-    }
+    try srv.run(dispatch.handleHttp, &rt);
 }

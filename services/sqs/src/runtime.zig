@@ -15,7 +15,7 @@ pub const Runtime = struct {
     fsync: bool = true,
     logger: log.Logger = .{},
     rng: std.Random,
-    // TODO(Plan 02): add `registry: *@import("registry.zig").Registry`
+    registry: *@import("registry.zig").Registry = undefined,
 };
 
 const testing = std.testing;

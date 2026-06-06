@@ -3,6 +3,7 @@ const config = @import("config");
 const attrs = @import("attrs.zig");
 
 pub const QueueConfig = struct {
+    name: ?[]const u8 = null,
     kind: config.QueueKind,
     attributes: std.StringArrayHashMapUnmanaged(config.Value),
 };
@@ -49,10 +50,19 @@ pub fn loadBytes(arena: std.mem.Allocator, bytes: []const u8) LoadError!QueueCon
         if (spec.default) |d| try map.put(arena, spec.name, d);
     }
 
+    var name: ?[]const u8 = null;
     var it = obj.iterator();
     while (it.next()) |entry| {
         const key = entry.key_ptr.*;
         const val = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "QueueName")) {
+            if (val != .string) {
+                std.debug.print("sqs config: 'QueueName' value must be a string\n", .{});
+                return config.Error.InvalidAttributeValue;
+            }
+            name = val.string;
+            continue;
+        }
         if (val != .string) {
             std.debug.print("sqs config: attribute '{s}' value must be a string\n", .{key});
             return config.Error.InvalidAttributeValue;
@@ -64,7 +74,7 @@ pub fn loadBytes(arena: std.mem.Allocator, bytes: []const u8) LoadError!QueueCon
         try map.put(arena, key, resolved);
     }
 
-    return .{ .kind = kind, .attributes = map };
+    return .{ .name = name, .kind = kind, .attributes = map };
 }
 
 const testing = std.testing;
@@ -118,6 +128,24 @@ test "invalid attribute fails fast" {
     const arena = arena_state.allocator();
     try testing.expectError(config.Error.InvalidAttributeValue, loadBytes(arena, "{ \"VisibilityTimeout\": \"99999\" }"));
     try testing.expectError(config.Error.InvalidAttributeName, loadBytes(arena, "{ \"Bogus\": \"1\" }"));
+}
+
+test "QueueName extracted, not treated as attribute" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const q = try loadBytes(arena, "{ \"QueueName\": \"x\", \"VisibilityTimeout\": \"60\" }");
+    try testing.expectEqualStrings("x", q.name.?);
+    try testing.expectEqual(@as(i64, 60), q.attributes.get("VisibilityTimeout").?.integer);
+    try testing.expect(q.attributes.get("QueueName") == null);
+}
+
+test "no QueueName yields null name" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const q = try loadBytes(arena, "{ \"VisibilityTimeout\": \"60\" }");
+    try testing.expect(q.name == null);
 }
 
 test "non-object top level rejected" {

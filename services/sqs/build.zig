@@ -59,12 +59,50 @@ pub fn build(b: *std.Build) void {
         }),
     });
     runtime_tests.root_module.addImport("core", core_dep.module("core"));
+    runtime_tests.root_module.addImport("config", config_dep.module("config"));
+
+    const queue_value_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/queue.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    queue_value_tests.root_module.addImport("config", config_dep.module("config"));
+
+    // registry.zig is the test root for the persistence layer; it transitively
+    // imports persist/queue_dir.zig, so those tests run here too. Using the
+    // subdir files as standalone roots fails (their `../` imports escape the
+    // module path rooted at the file's own directory).
+    const registry_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/registry.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    registry_tests.root_module.addImport("config", config_dep.module("config"));
+    registry_tests.root_module.addImport("core", core_dep.module("core"));
+
+    const wire_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/wire_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    wire_tests.root_module.addImport("server", server_dep.module("server"));
+    wire_tests.root_module.addImport("core", core_dep.module("core"));
+    wire_tests.root_module.addImport("config", config_dep.module("config"));
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(attrs_tests).step);
     test_step.dependOn(&b.addRunArtifact(queue_tests).step);
     test_step.dependOn(&b.addRunArtifact(receipt_tests).step);
     test_step.dependOn(&b.addRunArtifact(runtime_tests).step);
+    test_step.dependOn(&b.addRunArtifact(queue_value_tests).step);
+    test_step.dependOn(&b.addRunArtifact(registry_tests).step);
+    test_step.dependOn(&b.addRunArtifact(wire_tests).step);
 
     const module_test_files = [_][]const u8{
         "src/arn.zig",
