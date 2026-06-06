@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { delimiter, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
 
@@ -9,8 +10,31 @@ import { publicProcedure, router } from "../trpc";
 
 const exec = promisify(execFile);
 
-const LWS_BIN = process.env.LWS_BIN ?? "/Users/landon/projects/lws/cli/zig-out/bin/cli";
-const LWS_ROOT = process.env.LWS_ROOT ?? "/Users/landon/projects/lws";
+const LWS_BIN = process.env.LWS_BIN ?? "lws";
+const LWS_ROOT = process.env.LWS_ROOT;
+
+function resolveLwsBin(): string | null {
+  if (isAbsolute(LWS_BIN)) {
+    try {
+      accessSync(LWS_BIN, constants.X_OK);
+      return LWS_BIN;
+    } catch {
+      return null;
+    }
+  }
+
+  const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const dir of pathDirs) {
+    const candidate = join(dir, LWS_BIN);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // not here; keep searching
+    }
+  }
+  return null;
+}
 
 type RunResult = {
   stdout: string;
@@ -18,7 +42,13 @@ type RunResult = {
 };
 
 async function lws(args: string[]): Promise<RunResult> {
-  const { stdout, stderr } = await exec(LWS_BIN, args, {
+  const bin = resolveLwsBin();
+  if (!bin) {
+    throw new Error(
+      `lws CLI not found on PATH (looked for '${LWS_BIN}'). Add lws to your PATH to use the dashboard.`,
+    );
+  }
+  const { stdout, stderr } = await exec(bin, args, {
     cwd: LWS_ROOT,
     maxBuffer: 16 * 1024 * 1024,
   });
