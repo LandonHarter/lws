@@ -130,10 +130,11 @@ pub fn main(init: std.process.Init) !void {
 
     if (cfg.config_path.len > 0) {
         const loaded = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);
-        const name = loaded.name orelse std.fs.path.stem(std.fs.path.basename(cfg.config_path));
-        if (reg.get(name) == null) {
+        for (loaded.queues) |qc| {
+            const name = qc.name orelse std.fs.path.stem(std.fs.path.basename(cfg.config_path));
+            if (reg.get(name) != null) continue;
             var raw_attrs: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
-            var it = loaded.attributes.iterator();
+            var it = qc.attributes.iterator();
             while (it.next()) |e| {
                 const raw = switch (e.value_ptr.*) {
                     .integer => |n| try std.fmt.allocPrint(arena.allocator(), "{d}", .{n}),
@@ -148,7 +149,7 @@ pub fn main(init: std.process.Init) !void {
                 std.debug.print("sqs: failed to pre-seed queue '{s}': {s}\n", .{ name, @errorName(err) });
                 std.process.exit(1);
             };
-            std.debug.print("sqs: pre-seeded queue '{s}' ({s})\n", .{ name, @tagName(loaded.kind) });
+            std.debug.print("sqs: pre-seeded queue '{s}' ({s})\n", .{ name, @tagName(qc.kind) });
         }
     }
 
