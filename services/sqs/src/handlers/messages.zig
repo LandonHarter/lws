@@ -10,7 +10,13 @@ const queue = @import("../queue.zig");
 const arn = @import("../arn.zig");
 const message = @import("../message.zig");
 const message_store = @import("../store/message_store.zig");
+const receipt = @import("../receipt.zig");
 const id = @import("core").id;
+
+pub const SingleError = struct {
+    code: errors.Code,
+    message: []const u8,
+};
 
 const Request = envelope.Request;
 const Response = handler.Response;
@@ -88,7 +94,7 @@ fn jsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     };
 }
 
-fn resolveQueue(rt: *Runtime, url: []const u8) !*queue.Queue {
+pub fn resolveQueue(rt: *Runtime, url: []const u8) !*queue.Queue {
     const name = arn.parseQueueUrl(url) catch return error.BadQueueUrl;
     return rt.registry.get(name) orelse return error.QueueDoesNotExist;
 }
@@ -106,7 +112,7 @@ fn decodeBinary(arena: std.mem.Allocator, raw: []const u8) []const u8 {
 // SendMessage
 // ===========================================================================
 
-const SendParams = struct {
+pub const SendParams = struct {
     url: []const u8,
     body: []const u8,
     delay_seconds: ?i64 = null,
@@ -153,7 +159,7 @@ fn parseSend(req: *const Request) !SendParams {
     }
 }
 
-fn parseTraceJson(obj: std.json.ObjectMap) ?[]const u8 {
+pub fn parseTraceJson(obj: std.json.ObjectMap) ?[]const u8 {
     const v = obj.get("MessageSystemAttributes") orelse return null;
     if (v != .object) return null;
     const th = v.object.get("AWSTraceHeader") orelse return null;
@@ -162,21 +168,27 @@ fn parseTraceJson(obj: std.json.ObjectMap) ?[]const u8 {
 }
 
 fn parseTraceQuery(body: []const u8, arena: std.mem.Allocator) !?[]const u8 {
+    return parseTraceQueryPrefixed(body, arena, "MessageSystemAttribute");
+}
+
+// prefix is the key segment before ".{N}.", e.g. "MessageSystemAttribute" or
+// "SendMessageBatchRequestEntry.1.MessageSystemAttribute".
+pub fn parseTraceQueryPrefixed(body: []const u8, arena: std.mem.Allocator, prefix: []const u8) !?[]const u8 {
     var idx: usize = 1;
     while (true) : (idx += 1) {
-        var nb: [128]u8 = undefined;
-        const name_key = std.fmt.bufPrint(&nb, "MessageSystemAttribute.{d}.Name", .{idx}) catch break;
+        var nb: [256]u8 = undefined;
+        const name_key = std.fmt.bufPrint(&nb, "{s}.{d}.Name", .{ prefix, idx }) catch break;
         const name = (try query_proto.getScalar(body, arena, name_key)) orelse break;
         if (std.mem.eql(u8, name, "AWSTraceHeader")) {
-            var vb: [128]u8 = undefined;
-            const val_key = std.fmt.bufPrint(&vb, "MessageSystemAttribute.{d}.Value.StringValue", .{idx}) catch break;
+            var vb: [256]u8 = undefined;
+            const val_key = std.fmt.bufPrint(&vb, "{s}.{d}.Value.StringValue", .{ prefix, idx }) catch break;
             return try query_proto.getScalar(body, arena, val_key);
         }
     }
     return null;
 }
 
-fn parseMsgAttrsJson(arena: std.mem.Allocator, obj: std.json.ObjectMap) ![]message.MessageAttribute {
+pub fn parseMsgAttrsJson(arena: std.mem.Allocator, obj: std.json.ObjectMap) ![]message.MessageAttribute {
     const v = obj.get("MessageAttributes") orelse return &.{};
     if (v != .object) return error.InvalidParamValue;
     var list: std.ArrayList(message.MessageAttribute) = .empty;
@@ -194,23 +206,29 @@ fn parseMsgAttrsJson(arena: std.mem.Allocator, obj: std.json.ObjectMap) ![]messa
 }
 
 fn parseMsgAttrsQuery(body: []const u8, arena: std.mem.Allocator) ![]message.MessageAttribute {
+    return parseMsgAttrsQueryPrefixed(body, arena, "MessageAttribute");
+}
+
+// prefix is the key segment before ".{N}.", e.g. "MessageAttribute" or
+// "SendMessageBatchRequestEntry.1.MessageAttribute".
+pub fn parseMsgAttrsQueryPrefixed(body: []const u8, arena: std.mem.Allocator, prefix: []const u8) ![]message.MessageAttribute {
     var list: std.ArrayList(message.MessageAttribute) = .empty;
     var idx: usize = 1;
     while (true) : (idx += 1) {
-        var nb: [128]u8 = undefined;
-        const name_key = std.fmt.bufPrint(&nb, "MessageAttribute.{d}.Name", .{idx}) catch break;
+        var nb: [256]u8 = undefined;
+        const name_key = std.fmt.bufPrint(&nb, "{s}.{d}.Name", .{ prefix, idx }) catch break;
         const name = (try query_proto.getScalar(body, arena, name_key)) orelse break;
 
-        var tb: [160]u8 = undefined;
-        const type_key = std.fmt.bufPrint(&tb, "MessageAttribute.{d}.Value.DataType", .{idx}) catch break;
+        var tb: [256]u8 = undefined;
+        const type_key = std.fmt.bufPrint(&tb, "{s}.{d}.Value.DataType", .{ prefix, idx }) catch break;
         const data_type = (try query_proto.getScalar(body, arena, type_key)) orelse return error.InvalidParamValue;
 
         var a: message.MessageAttribute = .{ .name = name, .data_type = data_type };
-        var sb: [160]u8 = undefined;
-        const sv_key = std.fmt.bufPrint(&sb, "MessageAttribute.{d}.Value.StringValue", .{idx}) catch break;
+        var sb: [256]u8 = undefined;
+        const sv_key = std.fmt.bufPrint(&sb, "{s}.{d}.Value.StringValue", .{ prefix, idx }) catch break;
         if (try query_proto.getScalar(body, arena, sv_key)) |sv| a.string_value = sv;
-        var bb: [160]u8 = undefined;
-        const bv_key = std.fmt.bufPrint(&bb, "MessageAttribute.{d}.Value.BinaryValue", .{idx}) catch break;
+        var bb: [256]u8 = undefined;
+        const bv_key = std.fmt.bufPrint(&bb, "{s}.{d}.Value.BinaryValue", .{ prefix, idx }) catch break;
         if (try query_proto.getScalar(body, arena, bv_key)) |bv| a.binary_value = decodeBinary(arena, bv);
         try list.append(arena, a);
     }
@@ -259,44 +277,43 @@ fn validateAttrType(data_type: []const u8) AttrError!void {
     }
 }
 
-fn sendMessage(rt: *Runtime, req: *const Request) anyerror!Response {
-    const arena = req.arena.allocator();
-    const p = parseSend(req) catch |e| return switch (e) {
-        error.MissingQueueUrl, error.MissingMessageBody => errResp(rt, req, .missing_required_parameter),
-        else => errResp(rt, req, .invalid_parameter_value),
-    };
+// Validates and enqueues one message. Validation failures become a SingleError
+// (rendered as a 400 by the single handler, or a Failed entry by the batch
+// handler); only fatal store/allocation errors propagate. The queue must
+// already be resolved by the caller.
+pub const SendAttempt = union(enum) {
+    ok: message_store.SendOutcome,
+    err: SingleError,
+};
 
-    const q = resolveQueue(rt, p.url) catch |e| return switch (e) {
-        error.QueueDoesNotExist => errResp(rt, req, .queue_does_not_exist),
-        else => errResp(rt, req, .invalid_parameter_value),
-    };
-    const store = storeOf(q) orelse return errResp(rt, req, .internal_error);
+pub fn singleSend(rt: *Runtime, arena: std.mem.Allocator, q: *queue.Queue, p: SendParams) !SendAttempt {
+    const store = storeOf(q) orelse return error.NoStore;
 
     const is_fifo = q.kind == .fifo;
     if (is_fifo) {
-        const gid = p.group_id orelse return errMsg(rt, req, .invalid_parameter_value, "The request must contain the parameter MessageGroupId.");
-        if (!validFifoToken(gid)) return errMsg(rt, req, .invalid_parameter_value, "The value of the parameter MessageGroupId is invalid.");
+        const gid = p.group_id orelse return .{ .err = .{ .code = .invalid_parameter_value, .message = "The request must contain the parameter MessageGroupId." } };
+        if (!validFifoToken(gid)) return .{ .err = .{ .code = .invalid_parameter_value, .message = "The value of the parameter MessageGroupId is invalid." } };
         if (p.dedup_id) |did| {
-            if (!validFifoToken(did)) return errMsg(rt, req, .invalid_parameter_value, "The value of the parameter MessageDeduplicationId is invalid.");
+            if (!validFifoToken(did)) return .{ .err = .{ .code = .invalid_parameter_value, .message = "The value of the parameter MessageDeduplicationId is invalid." } };
         } else if (!boolAttr(q, "ContentBasedDeduplication", false)) {
-            return errMsg(rt, req, .invalid_parameter_value, "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly.");
+            return .{ .err = .{ .code = .invalid_parameter_value, .message = "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly." } };
         }
     } else {
-        if (p.group_id != null) return errMsg(rt, req, .invalid_parameter_value, "MessageGroupId is supported only for FIFO queues.");
-        if (p.dedup_id != null) return errMsg(rt, req, .invalid_parameter_value, "MessageDeduplicationId is supported only for FIFO queues.");
+        if (p.group_id != null) return .{ .err = .{ .code = .invalid_parameter_value, .message = "MessageGroupId is supported only for FIFO queues." } };
+        if (p.dedup_id != null) return .{ .err = .{ .code = .invalid_parameter_value, .message = "MessageDeduplicationId is supported only for FIFO queues." } };
     }
-    if (p.body.len == 0) return errResp(rt, req, .missing_required_parameter);
+    if (p.body.len == 0) return .{ .err = .{ .code = .missing_required_parameter, .message = errors.defaultMessage(.missing_required_parameter) } };
 
     const max_size = intAttr(q, "MaximumMessageSize", 262144);
     if (@as(i64, @intCast(p.body.len)) > max_size) {
         const msg = try std.fmt.allocPrint(arena, "One or more parameters are invalid. Reason: Message must be shorter than {d} bytes.", .{max_size});
-        return errMsg(rt, req, .invalid_parameter_value, msg);
+        return .{ .err = .{ .code = .invalid_parameter_value, .message = msg } };
     }
 
-    validateAttrs(p.attrs) catch return errMsg(rt, req, .invalid_parameter_value, "The message attributes are invalid.");
+    validateAttrs(p.attrs) catch return .{ .err = .{ .code = .invalid_parameter_value, .message = "The message attributes are invalid." } };
 
     const delay = p.delay_seconds orelse intAttr(q, "DelaySeconds", 0);
-    if (delay < 0 or delay > 900) return errMsg(rt, req, .invalid_parameter_value, "DelaySeconds must be between 0 and 900.");
+    if (delay < 0 or delay > 900) return .{ .err = .{ .code = .invalid_parameter_value, .message = "DelaySeconds must be between 0 and 900." } };
 
     var md5_body: [32]u8 = undefined;
     message.computeBodyMd5(&md5_body, p.body);
@@ -312,6 +329,29 @@ fn sendMessage(rt: *Runtime, req: *const Request) anyerror!Response {
     const outcome = store.send(msg) catch |e| {
         msg.destroy(rt.gpa);
         return e;
+    };
+    return .{ .ok = outcome };
+}
+
+fn sendMessage(rt: *Runtime, req: *const Request) anyerror!Response {
+    const arena = req.arena.allocator();
+    const p = parseSend(req) catch |e| return switch (e) {
+        error.MissingQueueUrl, error.MissingMessageBody => errResp(rt, req, .missing_required_parameter),
+        else => errResp(rt, req, .invalid_parameter_value),
+    };
+
+    const q = resolveQueue(rt, p.url) catch |e| return switch (e) {
+        error.QueueDoesNotExist => errResp(rt, req, .queue_does_not_exist),
+        else => errResp(rt, req, .invalid_parameter_value),
+    };
+
+    const attempt = singleSend(rt, arena, q, p) catch |e| return switch (e) {
+        error.NoStore => errResp(rt, req, .internal_error),
+        else => e,
+    };
+    const outcome = switch (attempt) {
+        .err => |se| return errMsg(rt, req, se.code, se.message),
+        .ok => |o| o,
     };
 
     const seq_str: ?[]const u8 = if (outcome.sequence_number) |sn|
@@ -695,6 +735,35 @@ fn parseDelete(req: *const Request) !DeleteParams {
     }
 }
 
+// Deletes one leased message. Returns a SingleError for a bad/foreign receipt
+// handle; null on success (deleting an already-gone lease is a no-op success).
+// Fatal store/allocation errors propagate.
+pub fn singleDelete(q: *queue.Queue, receipt_handle: []const u8) !?SingleError {
+    const store = storeOf(q) orelse return error.NoStore;
+    const h = receipt.decode(receipt_handle) catch return SingleError{ .code = .receipt_handle_invalid, .message = errors.defaultMessage(.receipt_handle_invalid) };
+    if (!std.mem.eql(u8, &h.queue_id, &q.id)) return SingleError{ .code = .receipt_handle_invalid, .message = errors.defaultMessage(.receipt_handle_invalid) };
+    try store.deleteLease(h.msg_seq, h.lease_nonce);
+    return null;
+}
+
+// Extends/sets one in-flight message's visibility. Returns a SingleError for an
+// out-of-range timeout, a bad/foreign handle, or a non-in-flight message; null
+// on success. Fatal store/allocation errors propagate.
+pub fn singleChangeVisibility(rt: *Runtime, q: *queue.Queue, receipt_handle: []const u8, visibility_seconds: i64) !?SingleError {
+    if (visibility_seconds < 0 or visibility_seconds > 43200) {
+        return SingleError{ .code = .invalid_parameter_value, .message = "VisibilityTimeout must be between 0 and 43200." };
+    }
+    const store = storeOf(q) orelse return error.NoStore;
+    const h = receipt.decode(receipt_handle) catch return SingleError{ .code = .receipt_handle_invalid, .message = errors.defaultMessage(.receipt_handle_invalid) };
+    if (!std.mem.eql(u8, &h.queue_id, &q.id)) return SingleError{ .code = .receipt_handle_invalid, .message = errors.defaultMessage(.receipt_handle_invalid) };
+    const now = rt.clock.nowMs();
+    store.changeVisibility(h.msg_seq, h.lease_nonce, now + visibility_seconds * 1000) catch |e| switch (e) {
+        error.MessageNotInflight => return SingleError{ .code = .message_not_inflight, .message = errors.defaultMessage(.message_not_inflight) },
+        else => return e,
+    };
+    return null;
+}
+
 fn deleteMessage(rt: *Runtime, req: *const Request) anyerror!Response {
     const p = parseDelete(req) catch |e| return switch (e) {
         error.MissingQueueUrl, error.MissingReceiptHandle => errResp(rt, req, .missing_required_parameter),
@@ -704,12 +773,12 @@ fn deleteMessage(rt: *Runtime, req: *const Request) anyerror!Response {
         error.QueueDoesNotExist => errResp(rt, req, .queue_does_not_exist),
         else => errResp(rt, req, .invalid_parameter_value),
     };
-    const store = storeOf(q) orelse return errResp(rt, req, .internal_error);
 
-    const h = @import("../receipt.zig").decode(p.receipt_handle) catch return errResp(rt, req, .receipt_handle_invalid);
-    if (!std.mem.eql(u8, &h.queue_id, &q.id)) return errResp(rt, req, .receipt_handle_invalid);
-
-    try store.deleteLease(h.msg_seq, h.lease_nonce);
+    const maybe_err = singleDelete(q, p.receipt_handle) catch |e| return switch (e) {
+        error.NoStore => errResp(rt, req, .internal_error),
+        else => e,
+    };
+    if (maybe_err) |se| return errMsg(rt, req, se.code, se.message);
 
     switch (req.protocol) {
         .json => return jsonOk("{}"),

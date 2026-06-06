@@ -105,6 +105,16 @@ pub fn build(b: *std.Build) void {
     wire_tests.root_module.addImport("core", core_dep.module("core"));
     wire_tests.root_module.addImport("config", config_dep.module("config"));
 
+    const batch_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/batch_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    batch_tests.root_module.addImport("core", core_dep.module("core"));
+    batch_tests.root_module.addImport("config", config_dep.module("config"));
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(attrs_tests).step);
     test_step.dependOn(&b.addRunArtifact(queue_tests).step);
@@ -114,6 +124,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(registry_tests).step);
     test_step.dependOn(&b.addRunArtifact(store_tests).step);
     test_step.dependOn(&b.addRunArtifact(wire_tests).step);
+    test_step.dependOn(&b.addRunArtifact(batch_tests).step);
 
     const module_test_files = [_][]const u8{
         "src/arn.zig",

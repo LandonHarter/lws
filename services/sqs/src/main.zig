@@ -9,6 +9,7 @@ const registry_mod = @import("registry.zig");
 const queue_lifecycle = @import("handlers/queue_lifecycle.zig");
 const queue_attrs = @import("handlers/queue_attrs.zig");
 const messages = @import("handlers/messages.zig");
+const batch = @import("handlers/batch.zig");
 const Ticker = @import("ticker.zig").Ticker;
 
 const Config = struct {
@@ -114,6 +115,7 @@ pub fn main(init: std.process.Init) !void {
     try queue_lifecycle.register(init.gpa);
     try queue_attrs.register(init.gpa);
     try messages.register(init.gpa);
+    try batch.register(init.gpa);
 
     if (cfg.config_path.len > 0) {
         const loaded = queue.loadFile(arena.allocator(), init.io, cfg.config_path) catch std.process.exit(1);
