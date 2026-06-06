@@ -13,6 +13,10 @@ pub const LoadError = error{
 
 const max_config_bytes = 4 * 1024 * 1024;
 
+pub fn writeDefaults(kind: config.QueueKind, w: *std.Io.Writer) !void {
+    try config.writeDefaults(&attrs.queue_attrs, kind, w);
+}
+
 pub fn loadFile(arena: std.mem.Allocator, io: std.Io, path: []const u8) LoadError!Queue {
     const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, std.Io.Limit.limited(max_config_bytes));
     return loadBytes(arena, bytes);

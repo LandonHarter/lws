@@ -6,6 +6,7 @@ const Config = struct {
     port: u16 = 9324,
     data_dir: []const u8 = ".lws/sqs",
     config_path: []const u8 = "",
+    generate_config: bool = false,
 };
 
 const State = struct {
@@ -26,10 +27,21 @@ pub fn main(init: std.process.Init) !void {
             cfg.data_dir = args.next() orelse return error.MissingDataDirValue;
         } else if (std.mem.eql(u8, arg, "--config")) {
             cfg.config_path = args.next() orelse return error.MissingConfigValue;
+        } else if (std.mem.eql(u8, arg, "--generate-config")) {
+            cfg.generate_config = true;
         } else {
             std.debug.print("sqs: unknown arg '{s}'\n", .{arg});
             return error.UnknownArg;
         }
+    }
+
+    if (cfg.generate_config) {
+        var wbuf: [4096]u8 = undefined;
+        var stdout_writer = std.Io.File.Writer.init(.stdout(), init.io, &wbuf);
+        const stdout = &stdout_writer.interface;
+        try queue.writeDefaults(.standard, stdout);
+        try stdout.flush();
+        return;
     }
 
     var arena = std.heap.ArenaAllocator.init(init.gpa);
