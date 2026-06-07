@@ -21,6 +21,13 @@ pub const registry = [_]ServiceSpec{
         .default_port = 9000,
         .description = "Simple Storage Service",
     },
+    .{
+        .name = "dynamodb",
+        .dir = "services/dynamodb",
+        .bin = "dynamodb",
+        .default_port = 8000,
+        .description = "Simple NoSQL Database (DynamoDB-compatible)",
+    },
 };
 
 pub fn find(name: []const u8) ?ServiceSpec {

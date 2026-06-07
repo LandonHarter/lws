@@ -6,6 +6,7 @@ import {
   Layers,
   Package,
   Server,
+  Table,
   type LucideIcon,
 } from "lucide-react";
 import { z } from "zod";
@@ -93,6 +94,26 @@ function s3Headline(raw: unknown): ServiceStat[] {
   ];
 }
 
+export const dynamoStatsSchema = z.object({
+  service: z.string(),
+  uptime_ms: z.number(),
+  tables: z.number(),
+  items: z.number(),
+  bytes: z.number(),
+  detail: z.array(z.object({ name: z.string(), items: z.number(), bytes: z.number() })),
+});
+
+export type DynamoStats = z.infer<typeof dynamoStatsSchema>;
+
+function dynamoHeadline(raw: unknown): ServiceStat[] {
+  const p = dynamoStatsSchema.safeParse(raw);
+  if (!p.success) return [];
+  return [
+    { key: "tables", label: "Tables", value: p.data.tables, tone: "flight", icon: Layers },
+    { key: "items", label: "Items", value: p.data.items, tone: "visible", icon: Database },
+  ];
+}
+
 const REGISTRY: Record<string, ServiceMeta> = {
   sqs: {
     id: "sqs",
@@ -109,6 +130,14 @@ const REGISTRY: Record<string, ServiceMeta> = {
     blurb: "Object storage buckets, running on local metal.",
     icon: HardDrive,
     headline: s3Headline,
+  },
+  dynamodb: {
+    id: "dynamodb",
+    label: "DynamoDB",
+    title: "Simple NoSQL Database",
+    blurb: "Key/value + document storage, running on local metal.",
+    icon: Table,
+    headline: dynamoHeadline,
   },
 };
 

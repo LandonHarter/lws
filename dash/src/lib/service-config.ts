@@ -170,6 +170,13 @@ const REGISTRY: Record<string, ServiceConfigSpec> = {
     queueNameLabel: "Bucket name",
     fields: [],
   },
+  dynamodb: {
+    id: "dynamodb",
+    defaultPort: 8000,
+    fifoField: null,
+    queueNameLabel: "Table name",
+    fields: [],
+  },
 };
 
 export function serviceConfigSpec(id: string): ServiceConfigSpec | null {

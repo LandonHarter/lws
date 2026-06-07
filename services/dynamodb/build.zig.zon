@@ -1,0 +1,16 @@
+.{
+    .name = .dynamodb,
+    .version = "0.0.0",
+    .fingerprint = 0xf635d91351e1b9a2,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .server = .{ .path = "../../shared/server" },
+        .config = .{ .path = "../../shared/config" },
+        .core = .{ .path = "../../shared/core" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
