@@ -54,8 +54,10 @@ Key properties:
 lws/
 ├── cli/         # Zig CLI — the control plane entry point
 ├── dash/        # Next.js dashboard (TypeScript/React)
-├── services/    # Service implementations
-│   └── sqs/     # SQS service (Zig HTTP server)
+├── services/    # Service implementations (Zig HTTP servers)
+│   ├── sqs/      # SQS service
+│   ├── s3/       # S3 service
+│   └── dynamodb/ # DynamoDB service
 ├── shared/      # Shared Zig libraries used by CLI + services
 │   ├── core/    # logging, IDs, timing
 │   ├── config/  # attribute validation, config parsing
@@ -132,6 +134,7 @@ Available services — see each service's README for launch flags, supported API
 |---|---|---|---|
 | `sqs` | `9324` | Simple Queue Service — AWS SQS-compatible queues (standard + FIFO) | [services/sqs/README.md](services/sqs/README.md) |
 | `s3`  | `9000` | Simple Storage Service — AWS S3-compatible buckets and objects | [services/s3/README.md](services/s3/README.md) |
+| `dynamodb` | `8000` | Simple NoSQL Database — AWS DynamoDB-compatible tables and items | [services/dynamodb/README.md](services/dynamodb/README.md) |
 
 ---
 
