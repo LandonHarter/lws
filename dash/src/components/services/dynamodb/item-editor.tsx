@@ -300,7 +300,7 @@ export function ItemEditor({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+          <span className="text-[13px] font-medium text-foreground">
             {mode === "new" ? "New item" : "Edit item"} · {table}
           </span>
           <Button type="button" variant="ghost" size="icon-sm" onClick={onClose}>

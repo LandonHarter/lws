@@ -22,7 +22,7 @@ export type ServiceCreateFieldsProps = {
 
 export function SyncStamp({ updatedAt }: { updatedAt: number | null }) {
   return (
-    <span className="font-mono text-[11px] text-muted-foreground">
+    <span className="text-[12px] tabular-nums text-muted-foreground">
       {updatedAt ? `synced ${fmtTime(updatedAt)}` : "syncing"}
     </span>
   );

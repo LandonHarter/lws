@@ -45,9 +45,7 @@ function StatsCell({ inst }: { inst: EnrichedInstance }) {
       {stats.map((s) => (
         <span key={s.key} className="flex items-baseline gap-1.5">
           <span className="tabular-nums text-foreground">{fmtNum(s.value)}</span>
-          <span className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-            {s.label}
-          </span>
+          <span className="text-[12px] text-muted-foreground">{s.label}</span>
         </span>
       ))}
     </div>
@@ -56,8 +54,8 @@ function StatsCell({ inst }: { inst: EnrichedInstance }) {
 
 function FilterBar({ query, setQuery }: { query: string; setQuery: (v: string) => void }) {
   return (
-    <div className="group relative flex items-center rounded-md border border-border bg-card/60 px-3 transition-colors focus-within:border-foreground/30">
-      <Search className="size-4 text-muted-foreground" strokeWidth={2} />
+    <div className="group relative flex items-center rounded-lg bg-muted/60 px-3 transition-colors focus-within:bg-muted">
+      <Search className="size-4 text-muted-foreground" strokeWidth={1.75} />
       <input
         value={query}
         onChange={(e) => setQuery(e.target.value)}
@@ -65,12 +63,12 @@ function FilterBar({ query, setQuery }: { query: string; setQuery: (v: string) =
           if (e.key === "Escape") setQuery("");
         }}
         placeholder="Filter resources by name or type…"
-        className="h-11 w-full bg-transparent px-3 font-mono text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
+        className="h-11 w-full bg-transparent px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
       />
       {query && (
         <button
           onClick={() => setQuery("")}
-          className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+          className="text-[12px] text-muted-foreground transition-colors hover:text-foreground"
         >
           clear
         </button>
@@ -83,17 +81,14 @@ function HeaderBar({ updatedAt, onRefresh }: { updatedAt: number | null; onRefre
   return (
     <div className="flex items-end justify-between">
       <div>
-        <SectionLabel>Resources</SectionLabel>
-        <h1 className="mt-3 font-heading text-5xl leading-[0.9] tracking-wide text-foreground">
-          RESOURCES
-        </h1>
-        <p className="mt-2 font-mono text-sm text-muted-foreground">
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Resources</h1>
+        <p className="mt-1.5 text-sm text-muted-foreground">
           Every running resource on this machine, regardless of type.
         </p>
       </div>
       <button
         onClick={onRefresh}
-        className="flex items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground transition-colors hover:border-foreground/25 hover:text-foreground"
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <RefreshCw className="size-3.5" />
         {updatedAt ? `synced ${fmtTime(updatedAt)}` : "syncing"}
@@ -124,7 +119,7 @@ export function Resources() {
       <FilterBar query={query} setQuery={setQuery} />
 
       {error && !data && (
-        <div className="rounded-md border border-down/30 bg-down/10 px-4 py-3 font-mono text-sm text-down">
+        <div className="rounded-lg border border-down/30 bg-down/10 px-4 py-3 text-sm text-down">
           cli unreachable — {error}
         </div>
       )}
@@ -143,7 +138,7 @@ export function Resources() {
 
       <div className="space-y-4">
         <SectionLabel>{q ? `Matches · "${query}"` : "All Resources"}</SectionLabel>
-        <Card className="overflow-hidden rounded-lg border-border bg-card/70 p-0 ring-0">
+        <Card className="overflow-hidden rounded-xl border-border bg-card p-0 ring-0">
           {!data && loading ? (
             <div className="space-y-px p-3">
               {Array.from({ length: 4 }).map((_, i) => (
@@ -151,7 +146,7 @@ export function Resources() {
               ))}
             </div>
           ) : filtered.length === 0 ? (
-            <div className="px-6 py-16 text-center font-mono text-sm text-muted-foreground">
+            <div className="px-6 py-16 text-center text-sm text-muted-foreground">
               {all.length === 0 ? "no resources running" : `no resources match "${query}"`}
             </div>
           ) : (
@@ -162,7 +157,7 @@ export function Resources() {
                     (h, i) => (
                       <TableHead
                         key={i}
-                        className="h-9 px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                        className="h-10 px-5 text-[12px] font-medium text-muted-foreground"
                       >
                         {h}
                       </TableHead>
@@ -183,29 +178,29 @@ export function Resources() {
                       className="cursor-pointer border-border/60"
                     >
                       <TableCell className="px-5">
-                        <StatusDot tone={live ? "ok" : "down"} ping={live} />
+                        <StatusDot tone={live ? "ok" : "down"} />
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-sm text-foreground">
+                      <TableCell className="px-5 text-sm font-medium text-foreground">
                         {inst.name}
                       </TableCell>
                       <TableCell className="px-5">
                         <Badge
                           variant="outline"
-                          className="h-4 px-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground"
+                          className="h-5 border-transparent bg-muted px-1.5 text-[11px] text-muted-foreground"
                         >
                           {meta.label}
                         </Badge>
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px] text-muted-foreground">
+                      <TableCell className="px-5 text-[13px] tabular-nums text-muted-foreground">
                         127.0.0.1:{inst.port}
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px] text-muted-foreground">
+                      <TableCell className="px-5 text-[13px] tabular-nums text-muted-foreground">
                         {inst.pid}
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px] text-muted-foreground">
+                      <TableCell className="px-5 text-[13px] tabular-nums text-muted-foreground">
                         {live && inst.uptimeMs !== null ? fmtUptime(inst.uptimeMs) : "—"}
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px]">
+                      <TableCell className="px-5 text-[13px]">
                         <StatsCell inst={inst} />
                       </TableCell>
                       <TableCell className="px-5">

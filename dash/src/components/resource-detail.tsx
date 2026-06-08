@@ -9,7 +9,7 @@ import { usePoll } from "@/lib/use-poll";
 import { fmtUptime } from "@/lib/format";
 import { serviceMeta } from "@/lib/services";
 import { cn } from "@/lib/utils";
-import { SectionLabel, StatusDot } from "@/components/bits";
+import { StatusDot } from "@/components/bits";
 import { InstanceActions } from "@/components/instance-actions";
 import { ServiceDetail } from "@/components/services";
 import { Badge } from "@/components/ui/badge";
@@ -27,8 +27,8 @@ function useNow(intervalMs = 1000) {
 
 function Chip({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card/60 px-2.5 py-1 font-mono text-[11px]">
-      <Icon className="size-3.5 text-muted-foreground" strokeWidth={2} />
+    <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-2.5 py-1 text-[12px] tabular-nums">
+      <Icon className="size-3.5 text-muted-foreground" strokeWidth={1.75} />
       <span className="text-foreground">{children}</span>
     </span>
   );
@@ -48,17 +48,17 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
         <Skeleton className="h-20 w-2/3 rounded-md" />
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-[104px] rounded-md" />
+            <Skeleton key={i} className="h-[104px] rounded-lg" />
           ))}
         </div>
-        <Skeleton className="h-56 rounded-lg" />
+        <Skeleton className="h-56 rounded-xl" />
       </div>
     );
   }
 
   if (error && !data) {
     return (
-      <div className="rounded-md border border-down/30 bg-down/10 px-4 py-3 font-mono text-sm text-down">
+      <div className="rounded-lg border border-down/30 bg-down/10 px-4 py-3 text-sm text-down">
         cli unreachable — {error}
       </div>
     );
@@ -66,10 +66,10 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
 
   if (data && !data.ok) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border bg-card/40 px-6 py-20 text-center">
-        <AlertTriangle className="size-6 text-down" />
-        <p className="font-heading text-2xl tracking-wide text-foreground">RESOURCE NOT FOUND</p>
-        <p className="font-mono text-xs text-muted-foreground">
+      <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-20 text-center">
+        <AlertTriangle className="size-6 text-down" strokeWidth={1.75} />
+        <p className="text-lg font-semibold tracking-tight text-foreground">Resource not found</p>
+        <p className="text-[13px] text-muted-foreground">
           {meta.label} / {id} — {data.error}
         </p>
       </div>
@@ -87,19 +87,19 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
 
   return (
     <div className="space-y-8">
-      <div className="space-y-4">
-        <SectionLabel>{meta.title}</SectionLabel>
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground">{meta.title}</p>
         <div className="flex flex-wrap items-center gap-4">
-          <h1 className="font-heading text-5xl leading-[0.9] tracking-wide text-foreground">
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
             {info.name}
           </h1>
           <span
             className={cn(
-              "inline-flex items-center gap-2 rounded-full border px-3 py-1 font-mono text-[11px] uppercase tracking-[0.16em]",
-              running ? "border-ok/30 bg-ok/10 text-ok" : "border-down/30 bg-down/10 text-down",
+              "inline-flex items-center gap-2 rounded-full px-3 py-1 text-[12px]",
+              running ? "bg-ok/10 text-ok" : "bg-down/10 text-down",
             )}
           >
-            <StatusDot tone={running ? "ok" : "down"} ping={running} />
+            <StatusDot tone={running ? "ok" : "down"} />
             {running ? "running" : "dead"}
           </span>
           <div className="ml-auto">
@@ -114,7 +114,7 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
         <div className="flex flex-wrap items-center gap-2">
           <Badge
             variant="outline"
-            className="h-6 rounded-md border-primary/30 bg-primary/10 px-2 font-mono text-[11px] uppercase tracking-wider text-primary"
+            className="h-6 rounded-md border-transparent bg-primary/10 px-2 text-[12px] text-primary"
           >
             {meta.label}
           </Badge>
@@ -125,10 +125,10 @@ export function ResourceDetail({ service, id }: { service: string; id: string })
       </div>
 
       {!running ? (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border bg-card/40 px-6 py-16 text-center">
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-16 text-center">
           <StatusDot tone="down" />
-          <p className="font-heading text-2xl tracking-wide text-foreground">INSTANCE OFFLINE</p>
-          <p className="font-mono text-xs text-muted-foreground">
+          <p className="text-lg font-semibold tracking-tight text-foreground">Instance offline</p>
+          <p className="text-[13px] text-muted-foreground">
             process is not alive — no live stats to report
           </p>
         </div>

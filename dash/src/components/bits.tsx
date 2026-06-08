@@ -25,7 +25,7 @@ const toneBg: Record<Tone, string> = {
 
 export function StatusDot({
   tone,
-  ping = false,
+  ping: _ping = false,
   className,
 }: {
   tone: "ok" | "down" | "idle";
@@ -34,11 +34,8 @@ export function StatusDot({
 }) {
   const color = tone === "ok" ? "bg-ok" : tone === "down" ? "bg-down" : "bg-muted-foreground";
   return (
-    <span className={cn("relative inline-flex size-2.5 shrink-0", className)}>
-      {ping && tone === "ok" && (
-        <span className={cn("lws-ping absolute inset-0 rounded-full", color)} />
-      )}
-      <span className={cn("relative inline-flex size-2.5 rounded-full", color)} />
+    <span className={cn("relative inline-flex size-2 shrink-0", className)}>
+      <span className={cn("relative inline-flex size-2 rounded-full", color)} />
     </span>
   );
 }
@@ -51,11 +48,13 @@ export function SectionLabel({
   className?: string;
 }) {
   return (
-    <div className={cn("flex items-center gap-2", className)}>
-      <span className="h-3 w-px bg-primary" />
-      <span className="font-mono text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-        {children}
-      </span>
+    <div
+      className={cn(
+        "text-[13px] font-medium text-muted-foreground",
+        className,
+      )}
+    >
+      {children}
     </div>
   );
 }
@@ -78,21 +77,19 @@ export function MetricTile({
   return (
     <div
       className={cn(
-        "group relative overflow-hidden rounded-md border border-border bg-card p-4 transition-colors hover:border-foreground/20",
+        "group relative overflow-hidden rounded-lg border border-border bg-card p-4 transition-colors hover:border-foreground/15",
         className,
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-          {label}
-        </span>
-        <Icon className={cn("size-3.5", toneText[tone])} strokeWidth={2} />
+        <span className="text-[13px] text-muted-foreground">{label}</span>
+        <Icon className={cn("size-4", toneText[tone])} strokeWidth={1.75} />
       </div>
-      <div className="mt-3 flex items-baseline gap-1.5">
-        <span className="font-mono text-3xl font-semibold tabular-nums leading-none text-foreground">
+      <div className="mt-4 flex items-baseline gap-1.5">
+        <span className="text-3xl font-semibold tabular-nums leading-none tracking-tight text-foreground">
           {fmtNum(value)}
         </span>
-        {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
       </div>
     </div>
   );
@@ -146,10 +143,8 @@ export function Legend() {
     <div className="flex items-center gap-4">
       {items.map((i) => (
         <span key={i.label} className="flex items-center gap-1.5">
-          <span className={cn("size-2 rounded-[2px]", toneBg[i.tone])} />
-          <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
-            {i.label}
-          </span>
+          <span className={cn("size-2 rounded-full", toneBg[i.tone])} />
+          <span className="text-[12px] text-muted-foreground">{i.label}</span>
         </span>
       ))}
     </div>

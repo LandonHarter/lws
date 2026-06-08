@@ -165,7 +165,7 @@ export function CreateTableModal({
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-background/70 p-6 backdrop-blur-sm" onClick={onClose}>
       <div className="my-4 w-full max-w-2xl rounded-lg border border-border bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
-          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">New table</span>
+          <span className="text-[13px] font-medium text-foreground">New table</span>
           <Button type="button" variant="ghost" size="icon-sm" onClick={onClose}>
             <X className="size-4 text-muted-foreground" />
           </Button>

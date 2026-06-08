@@ -13,7 +13,7 @@ function apply(dark: boolean) {
 }
 
 export function ThemeToggle({ className }: { className?: string }) {
-  const [dark, setDark] = useState(true);
+  const [dark, setDark] = useState(false);
 
   useEffect(() => {
     setDark(document.documentElement.classList.contains("dark"));
@@ -29,7 +29,7 @@ export function ThemeToggle({ className }: { className?: string }) {
         apply(next);
       }}
       className={cn(
-        "grid size-8 place-items-center rounded-md border border-border bg-card/60 text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground",
+        "grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
         className,
       )}
     >

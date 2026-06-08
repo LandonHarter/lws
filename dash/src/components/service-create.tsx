@@ -38,8 +38,8 @@ export function ServiceCreate({ service }: { service: string }) {
     return (
       <div className="space-y-4">
         <SectionLabel>Create</SectionLabel>
-        <Card className="rounded-lg border-dashed border-border bg-card/40 p-0 ring-0">
-          <div className="px-6 py-16 text-center font-mono text-sm text-muted-foreground">
+        <Card className="rounded-xl border-dashed border-border bg-transparent p-0 ring-0">
+          <div className="px-6 py-16 text-center text-sm text-muted-foreground">
             no creation form defined for {meta.label}
           </div>
         </Card>
@@ -73,39 +73,41 @@ export function ServiceCreate({ service }: { service: string }) {
   return (
     <div className="space-y-8">
       <div className="flex items-center gap-4">
-        <span className="grid size-14 place-items-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
-          <Icon className="size-6" strokeWidth={2} />
+        <span className="grid size-12 place-items-center rounded-xl bg-muted text-muted-foreground">
+          <Icon className="size-6" strokeWidth={1.75} />
         </span>
         <div>
-          <SectionLabel>New {meta.label} instance</SectionLabel>
-          <h1 className="mt-2 font-heading text-5xl leading-[0.9] tracking-wide text-foreground">
-            CREATE
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+            New {meta.label} instance
           </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Configure and launch a new instance.
+          </p>
         </div>
       </div>
 
       <div className="space-y-4">
         <SectionLabel>Instance</SectionLabel>
-        <Card className="gap-0 rounded-lg border-border bg-card/70 p-0 ring-0">
+        <Card className="gap-0 rounded-xl border-border bg-card p-0 ring-0">
           <div className="grid grid-cols-2 gap-x-6 gap-y-3 px-5 py-4">
             <div className="flex flex-col gap-1.5">
-              <span className="font-mono text-[12px] text-foreground">Name</span>
+              <span className="text-[13px] font-medium text-foreground">Name</span>
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="auto-generated"
                 spellCheck={false}
                 className={cn(
-                  "h-8 w-full rounded-md border bg-card/60 px-2.5 font-mono text-[13px] text-foreground outline-none transition-colors focus:border-foreground/30",
+                  "h-9 w-full rounded-lg border bg-background px-3 text-[13px] text-foreground outline-none transition-colors focus:border-foreground/30",
                   nameValid ? "border-border" : "border-down/50",
                 )}
               />
-              <span className="font-mono text-[11px] text-muted-foreground">
+              <span className="text-[12px] text-muted-foreground">
                 leave blank for a generated name
               </span>
             </div>
             <div className="flex flex-col gap-1.5">
-              <span className="font-mono text-[12px] text-foreground">Port</span>
+              <span className="text-[13px] font-medium text-foreground">Port</span>
               <input
                 type="number"
                 value={port}
@@ -113,11 +115,11 @@ export function ServiceCreate({ service }: { service: string }) {
                 max={65535}
                 onChange={(e) => setPort(e.target.value)}
                 className={cn(
-                  "h-8 w-full rounded-md border bg-card/60 px-2.5 font-mono text-[13px] tabular-nums text-foreground outline-none transition-colors focus:border-foreground/30",
+                  "h-9 w-full rounded-lg border bg-background px-3 text-[13px] tabular-nums text-foreground outline-none transition-colors focus:border-foreground/30",
                   portValid ? "border-border" : "border-down/50",
                 )}
               />
-              <span className="font-mono text-[11px] text-muted-foreground">
+              <span className="text-[12px] text-muted-foreground">
                 default {spec.defaultPort}
               </span>
             </div>
@@ -128,7 +130,7 @@ export function ServiceCreate({ service }: { service: string }) {
       <ServiceCreateFields service={service} spec={spec} onChange={setConfig} />
 
       {error && (
-        <div className="rounded-md border border-down/30 bg-down/10 px-4 py-3 font-mono text-sm text-down">
+        <div className="rounded-lg border border-down/30 bg-down/10 px-4 py-3 text-sm text-down">
           {error}
         </div>
       )}

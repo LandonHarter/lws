@@ -20,10 +20,8 @@ type EnrichedInstance = OverviewData["instances"][number];
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col items-end leading-tight">
-      <span className="font-mono text-sm tabular-nums text-foreground">{value}</span>
-      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-        {label}
-      </span>
+      <span className="text-sm tabular-nums text-foreground">{value}</span>
+      <span className="text-[11px] text-muted-foreground">{label}</span>
     </div>
   );
 }
@@ -35,29 +33,29 @@ function InstanceRow({ inst, onRefresh }: { inst: EnrichedInstance; onRefresh: (
   return (
     <Link
       href={`/${inst.service}/${encodeURIComponent(inst.name)}`}
-      className="group grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-md border border-border/60 bg-background/30 px-4 py-3 transition-all hover:border-foreground/25 hover:bg-accent/40"
+      className="group grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-lg px-4 py-3 transition-colors hover:bg-muted/60"
     >
-      <StatusDot tone={running ? "ok" : stopped ? "idle" : "down"} ping={running} />
+      <StatusDot tone={running ? "ok" : stopped ? "idle" : "down"} />
 
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="truncate font-mono text-sm text-foreground">{inst.name}</span>
+          <span className="truncate text-sm font-medium text-foreground">{inst.name}</span>
           <Badge
             variant="outline"
             className={cn(
-              "h-4 px-1.5 font-mono text-[10px] uppercase tracking-wider",
+              "h-5 border-transparent px-1.5 text-[11px]",
               running
-                ? "border-ok/30 bg-ok/10 text-ok"
+                ? "bg-ok/10 text-ok"
                 : stopped
-                  ? "border-muted-foreground/30 bg-muted/40 text-muted-foreground"
-                  : "border-down/30 bg-down/10 text-down",
+                  ? "bg-muted text-muted-foreground"
+                  : "bg-down/10 text-down",
             )}
           >
             {inst.status}
           </Badge>
         </div>
-        <div className="mt-1 flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
-          <span className="text-foreground/70">127.0.0.1:{inst.port}</span>
+        <div className="mt-1 flex items-center gap-3 text-[12px] tabular-nums text-muted-foreground">
+          <span>127.0.0.1:{inst.port}</span>
           {running && <span>pid {inst.pid}</span>}
           {running && inst.uptimeMs !== null && <span>up {fmtUptime(inst.uptimeMs)}</span>}
         </div>
@@ -80,9 +78,9 @@ function ServiceSummary({ stats }: { stats: ServiceStat[] }) {
   return (
     <div className="flex items-center gap-4">
       {stats.map((s) => (
-        <span key={s.key} className="flex items-baseline gap-1.5 font-mono text-[11px]">
+        <span key={s.key} className="flex items-baseline gap-1.5 text-[12px]">
           <span className="tabular-nums text-foreground">{fmtNum(s.value)}</span>
-          <span className="uppercase tracking-[0.16em] text-muted-foreground">{s.label}</span>
+          <span className="text-muted-foreground">{s.label}</span>
         </span>
       ))}
     </div>
@@ -107,33 +105,31 @@ function ServiceCard({
 
   return (
     <Card
-      className="lws-rise gap-0 rounded-lg border-border bg-card/70 p-0 ring-0"
-      style={{ animationDelay: `${index * 80}ms` }}
+      className="lws-rise gap-0 rounded-xl border-border bg-card p-0 ring-0"
+      style={{ animationDelay: `${index * 60}ms` }}
     >
       <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
         <div className="flex items-center gap-3.5">
-          <span className="grid size-11 place-items-center rounded-md border border-primary/25 bg-primary/10 text-primary">
-            <Icon className="size-5" strokeWidth={2} />
+          <span className="grid size-10 place-items-center rounded-lg bg-muted text-muted-foreground">
+            <Icon className="size-5" strokeWidth={1.75} />
           </span>
           <div>
             <div className="flex items-center gap-2.5">
               <Link
                 href={`/${serviceId}`}
-                className="font-heading text-2xl leading-none tracking-wide text-foreground transition-colors hover:text-primary"
+                className="text-lg font-semibold tracking-tight text-foreground transition-colors hover:text-primary"
               >
                 {meta.label}
               </Link>
-              <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                {meta.title}
-              </span>
+              <span className="text-[12px] text-muted-foreground">{meta.title}</span>
             </div>
-            <p className="mt-1.5 max-w-md font-mono text-xs text-muted-foreground">{meta.blurb}</p>
+            <p className="mt-1 max-w-md text-[13px] text-muted-foreground">{meta.blurb}</p>
           </div>
         </div>
         <div className="flex flex-col items-end gap-2">
           <Link
             href={`/${serviceId}`}
-            className="flex items-center gap-1 font-mono text-[11px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+            className="flex items-center gap-1 text-[12px] text-muted-foreground transition-colors hover:text-foreground"
           >
             {running}/{instances.length} live
             <ArrowUpRight className="size-3.5" />
@@ -142,9 +138,9 @@ function ServiceCard({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2 p-3">
+      <div className="flex flex-col gap-1 p-2">
         {instances.length === 0 ? (
-          <div className="px-2 py-6 text-center font-mono text-xs text-muted-foreground">
+          <div className="px-2 py-6 text-center text-[13px] text-muted-foreground">
             no instances
           </div>
         ) : (
@@ -161,17 +157,14 @@ function HeaderBar({ updatedAt, onRefresh }: { updatedAt: number | null; onRefre
   return (
     <div className="flex items-end justify-between">
       <div>
-        <SectionLabel>Control Plane</SectionLabel>
-        <h1 className="mt-3 font-heading text-5xl leading-[0.9] tracking-wide text-foreground">
-          LOCAL CLOUD
-        </h1>
-        <p className="mt-2 font-mono text-sm text-muted-foreground">
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Local Cloud</h1>
+        <p className="mt-1.5 text-sm text-muted-foreground">
           Every service running on this machine, in one console.
         </p>
       </div>
       <button
         onClick={onRefresh}
-        className="flex items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground transition-colors hover:border-foreground/25 hover:text-foreground"
+        className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] tabular-nums text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <RefreshCw className="size-3.5" />
         {updatedAt ? `synced ${fmtTime(updatedAt)}` : "syncing"}
@@ -204,7 +197,7 @@ export function Overview() {
       <HeaderBar updatedAt={updatedAt} onRefresh={refresh} />
 
       {error && !data && (
-        <div className="rounded-md border border-down/30 bg-down/10 px-4 py-3 font-mono text-sm text-down">
+        <div className="rounded-lg border border-down/30 bg-down/10 px-4 py-3 text-sm text-down">
           cli unreachable — {error}
         </div>
       )}
@@ -227,20 +220,20 @@ export function Overview() {
           </div>
 
           {data.instances.length === 0 ? (
-            <Card className="rounded-lg border-dashed border-border bg-card/40 p-0 ring-0">
+            <Card className="rounded-xl border-dashed border-border bg-transparent p-0 ring-0">
               <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
-                <span className="grid size-12 place-items-center rounded-md border border-border bg-background/60 text-muted-foreground">
-                  <Server className="size-5" />
+                <span className="grid size-12 place-items-center rounded-lg bg-muted text-muted-foreground">
+                  <Server className="size-5" strokeWidth={1.75} />
                 </span>
-                <p className="font-heading text-2xl tracking-wide text-foreground">NO SERVICES RUNNING</p>
-                <p className="font-mono text-xs text-muted-foreground">
+                <p className="text-lg font-semibold tracking-tight text-foreground">No services running</p>
+                <p className="text-[13px] text-muted-foreground">
                   start one with{" "}
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-foreground">lws run &lt;service&gt;</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">lws run &lt;service&gt;</span>
                 </p>
               </div>
             </Card>
           ) : (
-            <div className="space-y-5">
+            <div className="space-y-4">
               <SectionLabel>Services</SectionLabel>
               {data.services.map((svc, idx) => (
                 <ServiceCard

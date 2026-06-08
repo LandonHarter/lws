@@ -24,13 +24,13 @@ export function GenericDetail({ service, stats, updatedAt }: DetailProps) {
           <SectionLabel>Stats</SectionLabel>
           <SyncStamp updatedAt={updatedAt} />
         </div>
-        <Card className="overflow-hidden rounded-lg border-border bg-card/70 p-0 ring-0">
+        <Card className="overflow-hidden rounded-xl border-border bg-card p-0 ring-0">
           {json ? (
-            <pre className="overflow-x-auto px-5 py-4 font-mono text-[13px] leading-relaxed text-muted-foreground">
+            <pre className="overflow-x-auto px-5 py-4 text-[13px] leading-relaxed text-muted-foreground">
               {json}
             </pre>
           ) : (
-            <div className="px-6 py-16 text-center font-mono text-sm text-muted-foreground">
+            <div className="px-6 py-16 text-center text-sm text-muted-foreground">
               no stats reported
             </div>
           )}

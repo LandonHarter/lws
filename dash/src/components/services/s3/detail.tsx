@@ -478,13 +478,13 @@ function ObjectPane({
         <Table>
           <TableHeader>
             <TableRow className="border-border hover:bg-transparent">
-              <TableHead className="h-9 px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <TableHead className="h-9 px-5 text-[12px] font-medium text-muted-foreground">
                 name
               </TableHead>
-              <TableHead className="h-9 px-5 text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <TableHead className="h-9 px-5 text-right text-[12px] font-medium text-muted-foreground">
                 size
               </TableHead>
-              <TableHead className="h-9 px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+              <TableHead className="h-9 px-5 text-[12px] font-medium text-muted-foreground">
                 modified
               </TableHead>
               <TableHead className="h-9 w-[90px] px-5" />

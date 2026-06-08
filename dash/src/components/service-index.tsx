@@ -38,17 +38,15 @@ export function ServiceIndex({ service }: { service: string }) {
   return (
     <div className="space-y-8">
       <div className="flex items-center gap-4">
-        <span className="grid size-14 place-items-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
-          <Icon className="size-6" strokeWidth={2} />
+        <span className="grid size-12 place-items-center rounded-xl bg-muted text-muted-foreground">
+          <Icon className="size-6" strokeWidth={1.75} />
         </span>
         <div>
-          <SectionLabel>{meta.title}</SectionLabel>
-          <h1 className="mt-2 font-heading text-5xl leading-[0.9] tracking-wide text-foreground">
-            {meta.label}
-          </h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">{meta.label}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{meta.title}</p>
         </div>
         {canCreate && (
-          <Link href={`/${service}/new`} className={cn(buttonVariants(), "ml-auto self-end")}>
+          <Link href={`/${service}/new`} className={cn(buttonVariants(), "ml-auto self-center")}>
             <Plus className="size-4" />
             New instance
           </Link>
@@ -75,7 +73,7 @@ export function ServiceIndex({ service }: { service: string }) {
 
       <div className="space-y-4">
         <SectionLabel>Instances</SectionLabel>
-        <Card className="overflow-hidden rounded-lg border-border bg-card/70 p-0 ring-0">
+        <Card className="overflow-hidden rounded-xl border-border bg-card p-0 ring-0">
           {!data && loading ? (
             <div className="space-y-px p-3">
               {Array.from({ length: 3 }).map((_, i) => (
@@ -83,7 +81,7 @@ export function ServiceIndex({ service }: { service: string }) {
               ))}
             </div>
           ) : instances.length === 0 ? (
-            <div className="px-6 py-16 text-center font-mono text-sm text-muted-foreground">
+            <div className="px-6 py-16 text-center text-sm text-muted-foreground">
               no {meta.label} instances running
             </div>
           ) : (
@@ -93,7 +91,7 @@ export function ServiceIndex({ service }: { service: string }) {
                   {["status", "name", "endpoint", "pid", "uptime"].map((h) => (
                     <TableHead
                       key={h}
-                      className="h-9 px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                      className="h-10 px-5 text-[12px] font-medium text-muted-foreground"
                     >
                       {h}
                     </TableHead>
@@ -101,12 +99,12 @@ export function ServiceIndex({ service }: { service: string }) {
                   {statCols.map((h) => (
                     <TableHead
                       key={h}
-                      className="h-9 px-5 text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                      className="h-10 px-5 text-right text-[12px] font-medium text-muted-foreground"
                     >
                       {h}
                     </TableHead>
                   ))}
-                  <TableHead className="h-9 px-5" />
+                  <TableHead className="h-10 px-5" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -124,24 +122,24 @@ export function ServiceIndex({ service }: { service: string }) {
                       className="cursor-pointer border-border/60"
                     >
                       <TableCell className="px-5">
-                        <StatusDot tone={live ? "ok" : stopped ? "idle" : "down"} ping={live} />
+                        <StatusDot tone={live ? "ok" : stopped ? "idle" : "down"} />
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-sm text-foreground">
+                      <TableCell className="px-5 text-sm font-medium text-foreground">
                         {inst.name}
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px] text-muted-foreground">
+                      <TableCell className="px-5 text-[13px] tabular-nums text-muted-foreground">
                         127.0.0.1:{inst.port}
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px] text-muted-foreground">
+                      <TableCell className="px-5 text-[13px] tabular-nums text-muted-foreground">
                         {inst.pid}
                       </TableCell>
-                      <TableCell className="px-5 font-mono text-[13px] text-muted-foreground">
+                      <TableCell className="px-5 text-[13px] tabular-nums text-muted-foreground">
                         {live && inst.uptimeMs !== null ? fmtUptime(inst.uptimeMs) : "—"}
                       </TableCell>
                       {statCols.map((label) => (
                         <TableCell
                           key={label}
-                          className="px-5 text-right font-mono text-sm tabular-nums text-foreground"
+                          className="px-5 text-right text-sm tabular-nums text-foreground"
                         >
                           {live && byLabel.has(label) ? fmtNum(byLabel.get(label)!) : "—"}
                         </TableCell>

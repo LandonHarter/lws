@@ -1,20 +1,13 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Anton, JetBrains_Mono } from "next/font/google";
+import { Geist } from "next/font/google";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppShell } from "@/components/app-shell";
 
-const anton = Anton({
+const geist = Geist({
   subsets: ["latin"],
-  weight: "400",
-  variable: "--font-anton",
-  display: "swap",
-});
-
-const jetbrains = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-jet",
+  variable: "--font-geist",
   display: "swap",
 });
 
@@ -29,12 +22,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`dark h-full ${anton.variable} ${jetbrains.variable}`}>
+    <html lang="en" className={`h-full ${geist.variable}`} suppressHydrationWarning>
       <head>
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{var t=localStorage.getItem('theme');document.documentElement.classList.toggle('dark',t!=='light')}catch(e){}",
+              "try{if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark')}catch(e){}",
           }}
         />
       </head>

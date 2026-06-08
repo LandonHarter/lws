@@ -199,7 +199,7 @@ function QueueCard({
   return (
     <Card className="gap-0 rounded-lg border-border bg-card/70 p-0 ring-0">
       <div className="flex items-center gap-3 border-b border-border px-5 py-3">
-        <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+        <span className="text-[12px] text-muted-foreground">
           {String(index + 1).padStart(2, "0")}
         </span>
         <input
@@ -336,7 +336,7 @@ export function SqsCreate({ spec, onChange }: ServiceCreateFieldsProps) {
           <button
             type="button"
             onClick={() => setShowJson((s) => !s)}
-            className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground transition-colors hover:text-foreground"
+            className="text-[12px] text-muted-foreground transition-colors hover:text-foreground"
           >
             {showJson ? "hide" : "show"} generated config
           </button>

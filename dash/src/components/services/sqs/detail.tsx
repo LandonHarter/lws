@@ -22,7 +22,7 @@ export function SqsDetail({ stats, updatedAt }: { stats: unknown; updatedAt: num
   const parsed = sqsStatsSchema.safeParse(stats);
   if (!parsed.success) {
     return (
-      <div className="rounded-md border border-border bg-card/40 px-4 py-6 text-center font-mono text-sm text-muted-foreground">
+      <div className="rounded-lg border border-border bg-card px-4 py-6 text-center text-sm text-muted-foreground">
         stats endpoint unavailable
       </div>
     );
@@ -49,30 +49,30 @@ export function SqsDetail({ stats, updatedAt }: { stats: unknown; updatedAt: num
           </div>
         </div>
 
-        <Card className="overflow-hidden rounded-lg border-border bg-card/70 p-0 ring-0">
+        <Card className="overflow-hidden rounded-xl border-border bg-card p-0 ring-0">
           {s.detail.length === 0 ? (
-            <div className="px-6 py-16 text-center font-mono text-sm text-muted-foreground">
+            <div className="px-6 py-16 text-center text-sm text-muted-foreground">
               no queues created yet
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow className="border-border hover:bg-transparent">
-                  <TableHead className="h-9 px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                  <TableHead className="h-9 px-5 text-[12px] font-medium text-muted-foreground">
                     queue
                   </TableHead>
-                  <TableHead className="h-9 px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                  <TableHead className="h-9 px-5 text-[12px] font-medium text-muted-foreground">
                     kind
                   </TableHead>
                   {["visible", "in flight", "delayed"].map((h) => (
                     <TableHead
                       key={h}
-                      className="h-9 px-5 text-right font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                      className="h-9 px-5 text-right text-[12px] font-medium text-muted-foreground"
                     >
                       {h}
                     </TableHead>
                   ))}
-                  <TableHead className="h-9 w-[180px] px-5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                  <TableHead className="h-9 w-[180px] px-5 text-[12px] font-medium text-muted-foreground">
                     distribution
                   </TableHead>
                 </TableRow>
@@ -80,29 +80,29 @@ export function SqsDetail({ stats, updatedAt }: { stats: unknown; updatedAt: num
               <TableBody>
                 {s.detail.map((q) => (
                   <TableRow key={q.name} className="border-border/60">
-                    <TableCell className="px-5 font-mono text-sm text-foreground">
+                    <TableCell className="px-5 text-sm font-medium text-foreground">
                       {q.name}
                     </TableCell>
                     <TableCell className="px-5">
                       <Badge
                         variant="outline"
                         className={cn(
-                          "h-4 px-1.5 font-mono text-[10px] uppercase tracking-wider",
+                          "h-5 border-transparent px-1.5 text-[11px]",
                           q.kind === "fifo"
-                            ? "border-primary/30 bg-primary/10 text-primary"
-                            : "border-flight/30 bg-flight/10 text-flight",
+                            ? "bg-primary/10 text-primary"
+                            : "bg-flight/10 text-flight",
                         )}
                       >
                         {q.kind}
                       </Badge>
                     </TableCell>
-                    <TableCell className="px-5 text-right font-mono text-sm tabular-nums text-foreground">
+                    <TableCell className="px-5 text-right text-sm tabular-nums text-foreground">
                       {fmtNum(q.visible)}
                     </TableCell>
-                    <TableCell className="px-5 text-right font-mono text-sm tabular-nums text-foreground">
+                    <TableCell className="px-5 text-right text-sm tabular-nums text-foreground">
                       {fmtNum(q.in_flight)}
                     </TableCell>
-                    <TableCell className="px-5 text-right font-mono text-sm tabular-nums text-foreground">
+                    <TableCell className="px-5 text-right text-sm tabular-nums text-foreground">
                       {fmtNum(q.delayed)}
                     </TableCell>
                     <TableCell className="px-5">

@@ -354,7 +354,7 @@ function ItemsTab({ port, table, desc, updatedAt }: { port: number; table: strin
               key={m}
               type="button"
               onClick={() => setMode(m)}
-              className={cn("px-2.5 py-1 font-mono text-[12px] uppercase tracking-wider", mode === m ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}
+              className={cn("px-2.5 py-1 text-[12px]", mode === m ? "bg-primary/15 text-primary" : "text-muted-foreground hover:text-foreground")}
             >
               {m}
             </button>
@@ -411,7 +411,7 @@ function ItemsTab({ port, table, desc, updatedAt }: { port: number; table: strin
             <TableHeader>
               <TableRow className="border-border hover:bg-transparent">
                 {visibleCols.map((c) => (
-                  <TableHead key={c} className="h-9 px-4 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                  <TableHead key={c} className="h-9 px-4 text-[12px] font-medium text-muted-foreground">
                     {c}
                     {keyAttrs.includes(c) && <span className="ml-1 text-primary">*</span>}
                   </TableHead>
@@ -503,7 +503,7 @@ function TableView({ port, table, updatedAt }: { port: number | null; table: str
             key={t}
             type="button"
             onClick={() => setTab(t)}
-            className={cn("rounded px-2.5 py-1 font-mono text-[12px] uppercase tracking-wider", tab === t ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}
+            className={cn("rounded px-2.5 py-1 text-[12px]", tab === t ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground")}
           >
             {t}
           </button>
