@@ -1,0 +1,148 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Ref to build (defaults to the tag/branch that triggered the run)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-dash:
+    name: Build dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dashboard dependencies
+        working-directory: dash
+        run: bun install --frozen-lockfile
+
+      - name: Bundle dashboard
+        working-directory: dash
+        env:
+          LWS_VERSION: ${{ github.ref_name }}
+        run: bun run bundle
+
+      - name: Upload dashboard artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-bundle
+          path: dash/dist
+          retention-days: 1
+
+  release:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    needs: build-dash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-macos
+            archive: tar.gz
+          - target: x86_64-macos
+            archive: tar.gz
+          - target: aarch64-linux-gnu
+            archive: tar.gz
+          - target: x86_64-linux-gnu
+            archive: tar.gz
+          - target: x86_64-windows-gnu
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-${{ runner.os }}-${{ hashFiles('**/build.zig.zon') }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "tag=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build CLI
+        working-directory: cli
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dversion=${{ steps.version.outputs.value }}
+
+      - name: Build services
+        run: |
+          for svc in sqs s3 dynamodb; do
+            (cd "services/$svc" && zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dversion=${{ steps.version.outputs.value }})
+          done
+
+      - name: Download dashboard bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: dash-bundle
+          path: dash-bundle
+
+      - name: Stage release files
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          STAGE="lws-${VERSION}-${TARGET}"
+          mkdir -p "${STAGE}/bin" "${STAGE}/share/lws/dash"
+
+          ext=""
+          case "${TARGET}" in *windows*) ext=".exe" ;; esac
+
+          cp "cli/zig-out/bin/cli${ext}" "${STAGE}/bin/lws${ext}"
+          for svc in sqs s3 dynamodb; do
+            cp "services/${svc}/zig-out/bin/lws-${svc}${ext}" "${STAGE}/bin/lws-${svc}${ext}"
+          done
+
+          cp -R dash-bundle/. "${STAGE}/share/lws/dash/"
+          cp README.md "${STAGE}/"
+          cp LICENSE "${STAGE}/" 2>/dev/null || true
+          echo "STAGE=${STAGE}" >> "$GITHUB_ENV"
+
+      - name: Smoke test (native target only)
+        if: matrix.target == 'x86_64-linux-gnu'
+        run: |
+          set -euo pipefail
+          "./${STAGE}/bin/lws" version
+
+      - name: Create archive
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          case "${ARCHIVE}" in
+            tar.gz) tar -czf "${STAGE}.tar.gz" "${STAGE}" ;;
+            zip)    (cd "${STAGE}" && zip -r "../${STAGE}.zip" .) ;;
+          esac
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          files: |
+            ${{ env.STAGE }}.tar.gz
+            ${{ env.STAGE }}.zip

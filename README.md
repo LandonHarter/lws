@@ -1,6 +1,27 @@
 # LWS — Local Web Services
 
-LWS is basically a local clone of AWS.
+A local clone of AWS. Run SQS, S3, and DynamoDB on your laptop.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/LandonHarter/lws/master/install.sh | sh
+```
+
+Then in a new shell:
+
+```sh
+lws run sqs       # start an SQS instance
+lws list          # see what's running
+lws dash          # open the web dashboard (requires Node 20+)
+```
+
+Manual download: see the [latest release](https://github.com/LandonHarter/lws/releases/latest). Tarballs are per-OS/arch; extract anywhere and add the `bin/` directory to your PATH. Windows users download the `.zip` and add its `bin/` to PATH manually.
+
+## Requirements
+
+- macOS (Apple Silicon or Intel) or Linux (amd64 or arm64). Windows works via the zipped release; PATH setup is manual.
+- Node 20+ on your PATH if you want to use the dashboard (`lws dash`).
 
 ---
 
@@ -12,8 +33,8 @@ LWS is basically a local clone of AWS.
 - [The CLI](#the-cli)
 - [Services](#services)
 - [Runtime State Layout](#runtime-state-layout)
-- [Building & Running](#building--running)
 - [Configuration](#configuration)
+- [Contributing — build from source](#contributing--build-from-source)
 
 ---
 
@@ -155,7 +176,24 @@ The instance registry (name → service, PID, port, status) is also stored as fi
 
 ---
 
-## Building & Running
+## Configuration
+
+Dashboard environment variables (with defaults from `dash/src/server/routers/lws.ts`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LWS_BIN` | `lws` | CLI command the dashboard shells out to. Resolved against `PATH` unless an absolute path is given. If it cannot be found, the dashboard refuses to run any CLI action. |
+| `LWS_ROOT` | _(process cwd)_ | Working directory the CLI runs against. |
+
+> **`lws` must be on your `PATH`.** By default the dashboard invokes the bare `lws` command and looks it up in `PATH`. If `lws` is not found there, every dashboard action fails with a clear error instead of running. Either add the compiled CLI to your `PATH` (e.g. symlink `cli/zig-out/bin/cli` to a `PATH` directory as `lws`), or set `LWS_BIN` to an absolute path.
+
+Service-level configuration is supplied per instance via `--config` (a JSON file) or generated with `lws config generate <service>`.
+
+---
+
+## Contributing — build from source
+
+This section is for contributors building LWS locally. End users should use the [install script](#install) instead.
 
 ### Prerequisites
 
@@ -188,6 +226,8 @@ bun run dev            # http://localhost:3000
 bun run build && bun start   # production
 ```
 
+> **Switching from a source build to the install script?** If you previously symlinked `lws` from `cli/zig-out/bin/cli`, remove that old symlink before running `install.sh`. Otherwise the old symlink may shadow the newly installed `~/.lws/bin/lws` on your PATH.
+
 ### Typical workflow
 
 ```bash
@@ -202,18 +242,3 @@ cd cli && zig build
 ./zig-out/bin/cli info orders --json
 ./zig-out/bin/cli logs orders
 ```
-
----
-
-## Configuration
-
-Dashboard environment variables (with defaults from `dash/src/server/routers/lws.ts`):
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `LWS_BIN` | `lws` | CLI command the dashboard shells out to. Resolved against `PATH` unless an absolute path is given. If it cannot be found, the dashboard refuses to run any CLI action. |
-| `LWS_ROOT` | _(process cwd)_ | Working directory the CLI runs against. |
-
-> **`lws` must be on your `PATH`.** By default the dashboard invokes the bare `lws` command and looks it up in `PATH`. If `lws` is not found there, every dashboard action fails with a clear error instead of running. Either add the compiled CLI to your `PATH` (e.g. symlink `cli/zig-out/bin/cli` to a `PATH` directory as `lws`), or set `LWS_BIN` to an absolute path.
-
-Service-level configuration is supplied per instance via `--config` (a JSON file) or generated with `lws config generate <service>`.
