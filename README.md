@@ -43,21 +43,21 @@ Manual download: see the [latest release](https://github.com/LandonHarter/lws/re
 LWS is built from three layers:
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Dashboard (Next.js + tRPC)                       │
-│  Thin UI over the CLI — spawns CLI commands       │
-└───────────────────────┬───────────────────────────┘
-                        │  execFile(LWS_BIN, args)
-┌───────────────────────▼───────────────────────────┐
-│  CLI (Zig)                                          │
-│  Lifecycle control: run / start / stop / delete     │
-│  Instance registry, logs, stats, config             │
-└───────────────────────┬───────────────────────────┘
-                        │  spawns process, talks HTTP
-┌───────────────────────▼───────────────────────────┐
-│  Service binaries (Zig)  — e.g. SQS                 │
-│  Independent HTTP servers, file-backed persistence  │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Dashboard (Next.js + tRPC)                           │
+│  Thin UI over the CLI — spawns CLI commands           │
+└───────────────────────────┬───────────────────────────┘
+                            │  execFile(LWS_BIN, args)
+┌───────────────────────────▼───────────────────────────┐
+│  CLI (Zig)                                            │
+│  Lifecycle control: run / start / stop / delete       │
+│  Instance registry, logs, stats, config               │
+└───────────────────────────┬───────────────────────────┘
+                            │  spawns process, talks HTTP
+┌───────────────────────────▼───────────────────────────┐
+│  Service binaries (Zig)  — e.g. SQS                   │
+│  Independent HTTP servers, file-backed persistence    │
+└───────────────────────────────────────────────────────┘
 ```
 
 Key properties:
