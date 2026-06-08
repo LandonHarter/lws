@@ -39,6 +39,7 @@ jobs:
         with:
           name: dash-bundle
           path: dash/dist
+          include-hidden-files: true
           retention-days: 1
 
   release:
