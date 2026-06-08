@@ -3,6 +3,7 @@ const zli = @import("zli");
 const build_options = @import("build_options");
 
 const version = @import("commands/version.zig");
+const init = @import("commands/init.zig");
 const run = @import("commands/run.zig");
 const list = @import("commands/list.zig");
 const stop = @import("commands/stop.zig");
@@ -29,6 +30,7 @@ pub fn build(init_options: zli.InitOptions) !*zli.Command {
 
     try root.addCommands(&.{
         try version.register(init_options),
+        try init.register(init_options),
         try run.register(init_options),
         try list.register(init_options),
         try stop.register(init_options),

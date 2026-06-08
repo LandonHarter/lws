@@ -108,6 +108,7 @@ Entry point is `cli/src/main.zig`; the command tree is assembled in `cli/src/roo
 | Command | Description |
 |---|---|
 | `version` | Print CLI version. |
+| `init` | Mark the current directory as a project root (creates the `.lwsroot` marker). |
 | `run <service>` | Build (if needed) and launch a new instance of a service. |
 | `list` / `ls` | List instances in a table: `SERVICE  NAME  PID  PORT  STATUS`. |
 | `start <name>` | Revive a stopped instance on its original port, config, and data. |
