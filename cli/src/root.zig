@@ -13,6 +13,7 @@ const logs = @import("commands/logs.zig");
 const config = @import("commands/config.zig");
 const info = @import("commands/info.zig");
 const dash = @import("commands/dash.zig");
+const update = @import("commands/update.zig");
 
 pub fn build(init_options: zli.InitOptions) !*zli.Command {
     const v = try std.SemanticVersion.parse(build_options.version);
@@ -40,6 +41,7 @@ pub fn build(init_options: zli.InitOptions) !*zli.Command {
         try config.register(init_options),
         try info.register(init_options),
         try dash.register(init_options),
+        try update.register(init_options),
     });
 
     return root;
