@@ -2,7 +2,7 @@ const std = @import("std");
 const zli = @import("zli");
 
 const services = @import("../services.zig");
-const root_dir = @import("../core/root_dir.zig");
+const bin_resolver = @import("../core/bin_resolver.zig");
 
 const output_flag = zli.Flag{
     .name = "output",
@@ -49,6 +49,7 @@ fn generate(ctx: zli.CommandContext) !void {
     const allocator = ctx.allocator;
     const io = ctx.io;
     const out = ctx.writer;
+    const env_map: ?*const std.process.Environ.Map = if (ctx.data) |d| @ptrCast(@alignCast(d)) else null;
 
     const name = ctx.getArg("service") orelse {
         try out.print("missing service name\n", .{});
@@ -62,18 +63,19 @@ fn generate(ctx: zli.CommandContext) !void {
 
     const output = ctx.flag("output", []const u8);
 
-    const root = try root_dir.find(allocator, io);
-    defer allocator.free(root);
-
-    const service_dir = try std.fs.path.join(allocator, &.{ root, spec.dir });
-    defer allocator.free(service_dir);
-
-    const bin_path = try std.fs.path.join(allocator, &.{ service_dir, "zig-out", "bin", spec.bin });
-    defer allocator.free(bin_path);
-
-    try out.print("building {s}...\n", .{spec.name});
-    try out.flush();
-    try spawnAndWait(io, &.{ "zig", "build" }, .{ .path = service_dir });
+    const resolved = bin_resolver.resolve(allocator, io, env_map, spec.name, spec.bin) catch |err| switch (err) {
+        error.ServiceBinaryNotFound => {
+            try out.print(
+                "could not find {s} binary. Tried: $LWS_BIN_DIR, dir of lws executable, ./services/{s}/zig-out/bin/. " ++
+                    "If you installed lws, reinstall. If you're on the source tree, run `cd services/{s} && zig build`.\n",
+                .{ spec.bin, spec.name, spec.name },
+            );
+            return;
+        },
+        else => return err,
+    };
+    defer allocator.free(resolved.path);
+    const bin_path = resolved.path;
 
     var stdout_target: std.process.SpawnOptions.StdIo = .inherit;
     var out_file: ?std.Io.File = null;
@@ -98,20 +100,5 @@ fn generate(ctx: zli.CommandContext) !void {
 
     if (output.len > 0) {
         try out.print("wrote {s} config to {s}\n", .{ spec.name, output });
-    }
-}
-
-fn spawnAndWait(io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd) !void {
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .cwd = cwd,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    const term = try child.wait(io);
-    switch (term) {
-        .exited => |code| if (code != 0) return error.ChildFailed,
-        else => return error.ChildTerminated,
     }
 }

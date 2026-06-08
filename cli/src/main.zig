@@ -24,5 +24,5 @@ pub fn main(init: std.process.Init) !void {
     defer root.deinit();
 
     var argsIter = init.minimal.args.iterate();
-    try root.execute(&argsIter, .{});
+    try root.execute(&argsIter, .{ .data = init.environ_map });
 }
