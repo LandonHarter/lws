@@ -1,5 +1,6 @@
 const std = @import("std");
 const server = @import("server");
+const build_options = @import("build_options");
 const id = @import("core").id;
 const Runtime = @import("../runtime.zig").Runtime;
 const stats = @import("stats.zig");
@@ -15,7 +16,7 @@ pub fn handleHttp(ctx: *server.Context) !void {
     const rt: *Runtime = ctx.userData(Runtime);
 
     if (ctx.method() == .GET and std.mem.eql(u8, ctx.path(), "/health")) {
-        return ctx.json(.ok, "{\"status\":\"ok\"}");
+        return ctx.json(.ok, "{\"status\":\"ok\",\"version\":\"" ++ build_options.version ++ "\"}");
     }
     if (ctx.method() == .GET and std.mem.eql(u8, ctx.path(), "/stats")) {
         return stats.handle(ctx, rt);

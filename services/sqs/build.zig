@@ -4,6 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const version_str = b.option([]const u8, "version", "Release version (semver)") orelse "0.0.0-dev";
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", version_str);
+
     const exe = b.addExecutable(.{
         .name = "lws-sqs",
         .root_module = b.createModule(.{
@@ -12,6 +16,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe.root_module.addOptions("build_options", opts);
 
     const server_dep = b.dependency("server", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("server", server_dep.module("server"));
@@ -104,6 +109,7 @@ pub fn build(b: *std.Build) void {
     wire_tests.root_module.addImport("server", server_dep.module("server"));
     wire_tests.root_module.addImport("core", core_dep.module("core"));
     wire_tests.root_module.addImport("config", config_dep.module("config"));
+    wire_tests.root_module.addOptions("build_options", opts);
 
     const batch_tests = b.addTest(.{
         .root_module = b.createModule(.{

@@ -1,5 +1,6 @@
 const std = @import("std");
 const zli = @import("zli");
+const build_options = @import("build_options");
 
 const version = @import("commands/version.zig");
 const run = @import("commands/run.zig");
@@ -12,10 +13,17 @@ const config = @import("commands/config.zig");
 const info = @import("commands/info.zig");
 
 pub fn build(init_options: zli.InitOptions) !*zli.Command {
+    const v = try std.SemanticVersion.parse(build_options.version);
     const root = try zli.Command.init(init_options, .{
         .name = "LWS CLI",
         .description = "LWS command line interface",
-        .version = .{ .major = 0, .minor = 0, .patch = 1, .pre = null, .build = null },
+        .version = .{
+            .major = @intCast(v.major),
+            .minor = @intCast(v.minor),
+            .patch = @intCast(v.patch),
+            .pre = v.pre,
+            .build = v.build,
+        },
     }, showHelp);
 
     try root.addCommands(&.{

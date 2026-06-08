@@ -3,10 +3,16 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const version_str = b.option([]const u8, "version", "Release version (semver)") orelse "0.0.0-dev";
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", version_str);
+
     const mod = b.addModule("cli", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+    mod.addOptions("build_options", opts);
 
     const exe = b.addExecutable(.{
         .name = "cli",
@@ -22,6 +28,7 @@ pub fn build(b: *std.Build) void {
 
     const zli_dep = b.dependency("zli", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("zli", zli_dep.module("zli"));
+    exe.root_module.addOptions("build_options", opts);
 
     b.installArtifact(exe);
 

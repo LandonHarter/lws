@@ -1,5 +1,6 @@
 const std = @import("std");
 const server = @import("server");
+const build_options = @import("build_options");
 const Runtime = @import("../runtime.zig").Runtime;
 
 pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
@@ -14,8 +15,8 @@ pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
     const w = &aw.writer;
 
     try w.print(
-        "{{\"service\":\"dynamodb\",\"uptime_ms\":{d},\"tables\":{d},\"items\":{d},\"bytes\":{d},\"detail\":[",
-        .{ uptime_ms, stats.tables, stats.items, stats.bytes },
+        "{{\"service\":\"dynamodb\",\"version\":\"{s}\",\"uptime_ms\":{d},\"tables\":{d},\"items\":{d},\"bytes\":{d},\"detail\":[",
+        .{ build_options.version, uptime_ms, stats.tables, stats.items, stats.bytes },
     );
     for (stats.detail, 0..) |d, i| {
         if (i != 0) try w.writeByte(',');

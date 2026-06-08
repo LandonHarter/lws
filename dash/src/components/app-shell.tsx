@@ -96,7 +96,7 @@ function SideRail({ pathname }: { pathname: string }) {
           <span className="text-xs text-foreground">Live</span>
           <span className="ml-auto text-xs text-muted-foreground">2s poll</span>
         </div>
-        <div className="mt-2 text-xs text-muted-foreground">lws cli · v0.0.1</div>
+        <div className="mt-2 text-xs text-muted-foreground">lws · v{process.env.LWS_VERSION}</div>
       </div>
     </aside>
   );

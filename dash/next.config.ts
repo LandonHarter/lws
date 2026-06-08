@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  env: {
+    LWS_VERSION: process.env.LWS_VERSION ?? "0.0.0-dev",
+  },
 };
 
 export default nextConfig;

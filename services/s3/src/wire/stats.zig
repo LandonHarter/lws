@@ -1,5 +1,6 @@
 const std = @import("std");
 const server = @import("server");
+const build_options = @import("build_options");
 const Runtime = @import("../runtime.zig").Runtime;
 
 fn writeJsonString(w: *std.Io.Writer, s: []const u8) !void {
@@ -38,9 +39,9 @@ pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
     const w = &aw.writer;
 
     try w.print(
-        "{{\"service\":\"s3\",\"uptime_ms\":{d},\"buckets\":{d}," ++
+        "{{\"service\":\"s3\",\"version\":\"{s}\",\"uptime_ms\":{d},\"buckets\":{d}," ++
             "\"objects\":{d},\"bytes\":{d},\"detail\":[",
-        .{ uptime_ms, detail.len, total_objects, total_bytes },
+        .{ build_options.version, uptime_ms, detail.len, total_objects, total_bytes },
     );
     for (detail, 0..) |d, i| {
         if (i != 0) try w.writeByte(',');

@@ -1,5 +1,6 @@
 const std = @import("std");
 const server = @import("server");
+const build_options = @import("build_options");
 const Runtime = @import("../runtime.zig").Runtime;
 
 pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
@@ -24,9 +25,9 @@ pub fn handle(ctx: *server.Context, rt: *Runtime) !void {
     const w = &aw.writer;
 
     try w.print(
-        "{{\"service\":\"sqs\",\"uptime_ms\":{d},\"queues\":{d}," ++
+        "{{\"service\":\"sqs\",\"version\":\"{s}\",\"uptime_ms\":{d},\"queues\":{d}," ++
             "\"messages\":{{\"visible\":{d},\"in_flight\":{d},\"delayed\":{d}}},\"detail\":[",
-        .{ uptime_ms, per_queue.len, total_visible, total_in_flight, total_delayed },
+        .{ build_options.version, uptime_ms, per_queue.len, total_visible, total_in_flight, total_delayed },
     );
     for (per_queue, 0..) |q, idx| {
         if (idx != 0) try w.writeByte(',');
