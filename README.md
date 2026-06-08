@@ -108,6 +108,7 @@ Entry point is `cli/src/main.zig`; the command tree is assembled in `cli/src/roo
 | Command | Description |
 |---|---|
 | `version` | Print CLI version. |
+| `update` | Update lws to the latest release (re-runs the install script). |
 | `init` | Mark the current directory as a project root (creates the `.lwsroot` marker). |
 | `run <service>` | Build (if needed) and launch a new instance of a service. |
 | `list` / `ls` | List instances in a table: `SERVICE  NAME  PID  PORT  STATUS`. |
