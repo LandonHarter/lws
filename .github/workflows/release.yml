@@ -50,15 +50,9 @@ jobs:
       matrix:
         include:
           - target: aarch64-macos
-            archive: tar.gz
           - target: x86_64-macos
-            archive: tar.gz
           - target: aarch64-linux-gnu
-            archive: tar.gz
           - target: x86_64-linux-gnu
-            archive: tar.gz
-          - target: x86_64-windows-gnu
-            archive: zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -109,12 +103,9 @@ jobs:
           STAGE="lws-${VERSION}-${TARGET}"
           mkdir -p "${STAGE}/bin" "${STAGE}/share/lws/dash"
 
-          ext=""
-          case "${TARGET}" in *windows*) ext=".exe" ;; esac
-
-          cp "cli/zig-out/bin/cli${ext}" "${STAGE}/bin/lws${ext}"
+          cp "cli/zig-out/bin/cli" "${STAGE}/bin/lws"
           for svc in sqs s3 dynamodb; do
-            cp "services/${svc}/zig-out/bin/lws-${svc}${ext}" "${STAGE}/bin/lws-${svc}${ext}"
+            cp "services/${svc}/zig-out/bin/lws-${svc}" "${STAGE}/bin/lws-${svc}"
           done
 
           cp -R dash-bundle/. "${STAGE}/share/lws/dash/"
@@ -129,14 +120,9 @@ jobs:
           "./${STAGE}/bin/lws" version
 
       - name: Create archive
-        env:
-          ARCHIVE: ${{ matrix.archive }}
         run: |
           set -euo pipefail
-          case "${ARCHIVE}" in
-            tar.gz) tar -czf "${STAGE}.tar.gz" "${STAGE}" ;;
-            zip)    (cd "${STAGE}" && zip -r "../${STAGE}.zip" .) ;;
-          esac
+          tar -czf "${STAGE}.tar.gz" "${STAGE}"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
@@ -145,4 +131,3 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           files: |
             ${{ env.STAGE }}.tar.gz
-            ${{ env.STAGE }}.zip
