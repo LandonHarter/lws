@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "bundle": "next build && rm -rf dist && mkdir -p dist && cp -R .next/standalone/. dist/ && cp -R .next/static dist/.next/static && cp -R public dist/public"
+    "bundle": "next build && rm -rf dist && mkdir -p dist && cp -R .next/standalone/. dist/ && cp -R .next/static dist/.next/static && { [ -d public ] && cp -R public dist/public || true; }"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
