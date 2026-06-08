@@ -16,11 +16,13 @@ lws list          # see what's running
 lws dash          # open the web dashboard (requires Node 20+)
 ```
 
-Manual download: see the [latest release](https://github.com/LandonHarter/lws/releases/latest). Tarballs are per-OS/arch; extract anywhere and add the `bin/` directory to your PATH. Windows users download the `.zip` and add its `bin/` to PATH manually.
+> **Windows is not supported.** LWS runs on macOS and Linux only.
+
+Manual download: see the [latest release](https://github.com/LandonHarter/lws/releases/latest). Tarballs are per-OS/arch; extract anywhere and add the `bin/` directory to your PATH.
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel) or Linux (amd64 or arm64). Windows works via the zipped release; PATH setup is manual.
+- macOS (Apple Silicon or Intel) or Linux (amd64 or arm64). **Windows is not supported.**
 - Node 20+ on your PATH if you want to use the dashboard (`lws dash`).
 
 ---
