@@ -85,7 +85,7 @@ jobs:
 
       - name: Build services
         run: |
-          for svc in sqs s3 dynamodb; do
+          for svc in sqs s3 dynamodb postgres; do
             (cd "services/$svc" && zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dversion=${{ steps.version.outputs.value }})
           done
 
@@ -105,7 +105,7 @@ jobs:
           mkdir -p "${STAGE}/bin" "${STAGE}/share/lws/dash"
 
           cp "cli/zig-out/bin/cli" "${STAGE}/bin/lws"
-          for svc in sqs s3 dynamodb; do
+          for svc in sqs s3 dynamodb postgres; do
             cp "services/${svc}/zig-out/bin/lws-${svc}" "${STAGE}/bin/lws-${svc}"
           done
 

@@ -28,6 +28,13 @@ pub const registry = [_]ServiceSpec{
         .default_port = 8000,
         .description = "Simple NoSQL Database (DynamoDB-compatible)",
     },
+    .{
+        .name = "postgres",
+        .dir = "services/postgres",
+        .bin = "lws-postgres",
+        .default_port = 5432,
+        .description = "PostgreSQL database (wraps system postgres)",
+    },
 };
 
 pub fn find(name: []const u8) ?ServiceSpec {

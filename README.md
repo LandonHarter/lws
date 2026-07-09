@@ -1,6 +1,6 @@
 # LWS — Local Web Services
 
-A local clone of AWS. Run SQS, S3, and DynamoDB on your laptop.
+A local clone of AWS. Run SQS, S3, DynamoDB, and PostgreSQL on your laptop.
 
 ## Install
 
@@ -24,6 +24,7 @@ Manual download: see the [latest release](https://github.com/LandonHarter/lws/re
 
 - macOS (Apple Silicon or Intel) or Linux (amd64 or arm64). **Windows is not supported.**
 - Node 20+ on your PATH if you want to use the dashboard (`lws dash`).
+- **PostgreSQL** (`initdb` + `postgres`, v14+) if you want to run the `postgres` service — it wraps your system's PostgreSQL rather than reimplementing it. See [services/postgres/README.md](services/postgres/README.md) for install commands. The other services need no external tools.
 
 ---
 
@@ -80,7 +81,8 @@ lws/
 ├── services/    # Service implementations (Zig HTTP servers)
 │   ├── sqs/      # SQS service
 │   ├── s3/       # S3 service
-│   └── dynamodb/ # DynamoDB service
+│   ├── dynamodb/ # DynamoDB service
+│   └── postgres/ # PostgreSQL service (wraps system postgres)
 ├── shared/      # Shared Zig libraries used by CLI + services
 │   ├── core/    # logging, IDs, timing
 │   ├── config/  # attribute validation, config parsing
@@ -160,6 +162,7 @@ Available services — see each service's README for launch flags, supported API
 | `sqs` | `9324` | Simple Queue Service — AWS SQS-compatible queues (standard + FIFO) | [services/sqs/README.md](services/sqs/README.md) |
 | `s3`  | `9000` | Simple Storage Service — AWS S3-compatible buckets and objects | [services/s3/README.md](services/s3/README.md) |
 | `dynamodb` | `8000` | Simple NoSQL Database — AWS DynamoDB-compatible tables and items | [services/dynamodb/README.md](services/dynamodb/README.md) |
+| `postgres` | `5432` | PostgreSQL database — wraps your system's `postgres`/`initdb` (must be installed) | [services/postgres/README.md](services/postgres/README.md) |
 
 ---
 
