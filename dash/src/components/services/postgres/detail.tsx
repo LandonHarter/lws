@@ -19,6 +19,9 @@ import { usePoll } from "@/lib/use-poll";
 import { cn } from "@/lib/utils";
 import { MetricTile, SectionLabel } from "@/components/bits";
 import { SyncStamp } from "@/components/services/shared";
+import { DataGrid } from "@/components/services/postgres/data-grid";
+import { QueryConsole } from "@/components/services/postgres/query-console";
+import { type TableStructure } from "@/components/services/postgres/types";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -30,18 +33,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type PgColumn = {
-  name: string;
-  dataType: string;
-  nullable: boolean;
-  default: string | null;
-  isPrimaryKey: boolean;
-};
-type TableStructure = {
-  columns: PgColumn[];
-  primaryKey: string[];
-  rowEstimate: number;
-};
 type TableEntry = { name: string; type: string };
 
 const selectCls =
@@ -59,6 +50,7 @@ export function PostgresDetail({
 }) {
   const [selectedDb, setSelectedDb] = useState("postgres");
   const [databases, setDatabases] = useState<string[]>(["postgres"]);
+  const [tab, setTab] = useState<"browse" | "query">("browse");
   const [deps, setDeps] = useState<{ installed: boolean; guidance: string | null } | null>(null);
 
   useEffect(() => {
@@ -101,9 +93,40 @@ export function PostgresDetail({
         onDbChange={setSelectedDb}
       />
 
-      <StatsTiles port={port} database={selectedDb} />
+      <div className="flex items-center gap-1 border-b border-border">
+        {(["browse", "query"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={cn(
+              "-mb-px border-b-2 px-3 py-2 text-[13px] transition-colors",
+              tab === t
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t === "browse" ? "Browse" : "Query"}
+          </button>
+        ))}
+      </div>
 
-      <SchemaBrowser port={port} database={selectedDb} updatedAt={updatedAt} />
+      {tab === "browse" ? (
+        <>
+          <StatsTiles port={port} database={selectedDb} />
+          <SchemaBrowser port={port} database={selectedDb} updatedAt={updatedAt} />
+        </>
+      ) : port !== null ? (
+        <Card className="gap-0 rounded-lg border-border bg-card/70 p-0 ring-0">
+          <QueryConsole port={port} database={selectedDb} />
+        </Card>
+      ) : (
+        <Card className="items-center justify-center rounded-lg border-border bg-card/50 p-0 ring-0">
+          <div className="px-6 py-24 text-center font-mono text-sm text-muted-foreground">
+            instance not running
+          </div>
+        </Card>
+      )}
     </>
   );
 }
@@ -346,6 +369,7 @@ function StructurePane({
 }) {
   const [desc, setDesc] = useState<TableStructure | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [subTab, setSubTab] = useState<"data" | "structure">("data");
 
   useEffect(() => {
     if (port === null) return;
@@ -364,7 +388,22 @@ function StructurePane({
   return (
     <Card className="gap-0 rounded-lg border-border bg-card/70 p-0 ring-0">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="font-mono text-[13px] text-foreground">{schema}.{table}</span>
+        <div className="flex items-center gap-1">
+          {(["data", "structure"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setSubTab(t)}
+              className={cn(
+                "rounded px-2.5 py-1 text-[12px]",
+                subTab === t ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        <span className="ml-2 font-mono text-[13px] text-foreground">{schema}.{table}</span>
         {desc && (
           <span className="ml-auto flex items-center gap-3 font-mono text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-1">
@@ -382,6 +421,16 @@ function StructurePane({
 
       {!desc ? (
         <div className="px-6 py-20 text-center font-mono text-sm text-muted-foreground">{err ? "" : "loading…"}</div>
+      ) : subTab === "data" && port !== null ? (
+        <DataGrid
+          port={port}
+          database={database}
+          schema={schema}
+          table={table}
+          columns={desc.columns}
+          primaryKey={desc.primaryKey}
+          onChanged={() => {}}
+        />
       ) : (
         <>
           <div className="overflow-x-auto">
@@ -412,10 +461,7 @@ function StructurePane({
             </Table>
           </div>
 
-          <div className="flex items-center justify-between border-t border-border px-4 py-2">
-            <span className="font-mono text-[11px] text-muted-foreground">
-              data / query tabs — phase 04
-            </span>
+          <div className="flex items-center justify-end border-t border-border px-4 py-2">
             <SyncStamp updatedAt={updatedAt} />
           </div>
         </>

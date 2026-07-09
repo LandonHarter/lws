@@ -241,4 +241,152 @@ export const postgresRouter = router({
       };
     });
   }),
+
+  // Paginated rows for the data grid. Identifiers (schema/table/orderBy) go
+  // through ident(); limit/offset are $n parameters.
+  tableRows: publicProcedure
+    .input(
+      base.extend({
+        schema: z.string().min(1),
+        table: z.string().min(1),
+        limit: z.number().int().min(1).max(500).default(100),
+        offset: z.number().int().min(0).default(0),
+        orderBy: z.string().min(1).optional(),
+        orderDir: z.enum(["asc", "desc"]).default("asc"),
+      }),
+    )
+    .query(async ({ input }) => {
+      return withClient(input.port, input.database, async (c) => {
+        const rel = `${ident(input.schema)}.${ident(input.table)}`;
+        const order = input.orderBy
+          ? `ORDER BY ${ident(input.orderBy)} ${input.orderDir === "desc" ? "DESC" : "ASC"}`
+          : "";
+        const res = await c.query(
+          `SELECT * FROM ${rel} ${order} LIMIT $1 OFFSET $2`,
+          [input.limit, input.offset],
+        );
+        const total = await c.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM ${rel}`,
+        );
+        return {
+          columns: res.fields.map((f) => ({ name: f.name, dataTypeID: f.dataTypeID })),
+          rows: res.rows as Record<string, unknown>[],
+          total: Number(total.rows[0]?.n ?? 0),
+        };
+      });
+    }),
+
+  insertRow: publicProcedure
+    .input(
+      base.extend({
+        schema: z.string().min(1),
+        table: z.string().min(1),
+        values: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const cols = Object.keys(input.values);
+      if (cols.length === 0) throw new Error("no columns to insert");
+      return withClient(input.port, input.database, async (c) => {
+        const rel = `${ident(input.schema)}.${ident(input.table)}`;
+        const params = cols.map((_, i) => `$${i + 1}`);
+        const res = await c.query(
+          `INSERT INTO ${rel} (${cols.map(ident).join(",")}) VALUES (${params.join(",")}) RETURNING *`,
+          cols.map((col) => input.values[col]),
+        );
+        return res.rows[0] as Record<string, unknown>;
+      });
+    }),
+
+  updateRow: publicProcedure
+    .input(
+      base.extend({
+        schema: z.string().min(1),
+        table: z.string().min(1),
+        key: z.record(z.string(), z.unknown()),
+        changes: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const setCols = Object.keys(input.changes);
+      const keyCols = Object.keys(input.key);
+      if (keyCols.length === 0) throw new Error("table has no primary key; edit via raw SQL");
+      if (setCols.length === 0) throw new Error("no changes to apply");
+      return withClient(input.port, input.database, async (c) => {
+        const rel = `${ident(input.schema)}.${ident(input.table)}`;
+        const sets = setCols.map((col, i) => `${ident(col)}=$${i + 1}`);
+        const wheres = keyCols.map((col, i) => `${ident(col)}=$${setCols.length + i + 1}`);
+        const res = await c.query(
+          `UPDATE ${rel} SET ${sets.join(",")} WHERE ${wheres.join(" AND ")} RETURNING *`,
+          [...setCols.map((col) => input.changes[col]), ...keyCols.map((col) => input.key[col])],
+        );
+        return res.rows[0] as Record<string, unknown>;
+      });
+    }),
+
+  deleteRow: publicProcedure
+    .input(
+      base.extend({
+        schema: z.string().min(1),
+        table: z.string().min(1),
+        key: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const keyCols = Object.keys(input.key);
+      if (keyCols.length === 0) throw new Error("table has no primary key; delete via raw SQL");
+      return withClient(input.port, input.database, async (c) => {
+        const rel = `${ident(input.schema)}.${ident(input.table)}`;
+        const wheres = keyCols.map((col, i) => `${ident(col)}=$${i + 1}`);
+        const res = await c.query(
+          `DELETE FROM ${rel} WHERE ${wheres.join(" AND ")}`,
+          keyCols.map((col) => input.key[col]),
+        );
+        return { deleted: res.rowCount ?? 0 };
+      });
+    }),
+
+  // Raw SQL executor. Uses a dedicated client so multi-statement scripts and
+  // errors are contained. Returns a discriminated { ok } union — SQL errors are
+  // data, never thrown (only connection failures throw).
+  runQuery: publicProcedure
+    .input(base.extend({ sql: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const client = await poolFor(input.port, input.database).connect();
+      try {
+        const started = Date.now();
+        const raw = await client.query(input.sql);
+        const results = Array.isArray(raw) ? raw : [raw];
+        return {
+          ok: true as const,
+          elapsedMs: Date.now() - started,
+          results: results.map((r) => ({
+            command: r.command,
+            rowCount: r.rowCount ?? 0,
+            columns: ((r.fields ?? []) as { name: string }[]).map((f) => f.name),
+            rows: (r.rows ?? []) as Record<string, unknown>[],
+          })),
+        };
+      } catch (e) {
+        const err = e as {
+          message?: string;
+          position?: string;
+          code?: string;
+          detail?: string;
+          hint?: string;
+        };
+        return {
+          ok: false as const,
+          error: {
+            message: err.message ?? "query failed",
+            position: err.position ?? null,
+            code: err.code ?? null,
+            detail: err.detail ?? null,
+            hint: err.hint ?? null,
+          },
+        };
+      } finally {
+        client.release();
+      }
+    }),
 });
