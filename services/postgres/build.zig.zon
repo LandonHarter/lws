@@ -1,0 +1,16 @@
+.{
+    .name = .lws_postgres,
+    .version = "0.0.0",
+    .fingerprint = 0x414948b63de924b0,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .server = .{ .path = "../../shared/server" },
+        .config = .{ .path = "../../shared/config" },
+        .core = .{ .path = "../../shared/core" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
