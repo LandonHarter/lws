@@ -9,6 +9,7 @@ import {
 import { SqsCreate, SqsDetail } from "@/components/services/sqs";
 import { S3Detail } from "@/components/services/s3";
 import { DynamoCreate, DynamoDetail } from "@/components/services/dynamodb";
+import { PostgresCreateFields, PostgresDetail } from "@/components/services/postgres";
 
 export function ServiceDetail(props: DetailProps) {
   switch (serviceMeta(props.service).id) {
@@ -32,6 +33,15 @@ export function ServiceDetail(props: DetailProps) {
           updatedAt={props.updatedAt}
         />
       );
+    case "postgres":
+      return (
+        <PostgresDetail
+          name={props.name}
+          port={props.port}
+          stats={props.stats}
+          updatedAt={props.updatedAt}
+        />
+      );
     default:
       return <GenericDetail {...props} />;
   }
@@ -46,6 +56,8 @@ export function ServiceCreateFields({
       return <SqsCreate {...props} />;
     case "dynamodb":
       return <DynamoCreate {...props} />;
+    case "postgres":
+      return <PostgresCreateFields {...props} />;
     default:
       return null;
   }

@@ -177,6 +177,13 @@ const REGISTRY: Record<string, ServiceConfigSpec> = {
     queueNameLabel: "Table name",
     fields: [],
   },
+  postgres: {
+    id: "postgres",
+    defaultPort: 5432,
+    fifoField: null,
+    queueNameLabel: "Database name",
+    fields: [],
+  },
 };
 
 export function serviceConfigSpec(id: string): ServiceConfigSpec | null {
