@@ -79,10 +79,16 @@ fn deleteCmd(ctx: zli.CommandContext) !void {
             try out.print("{s} instance '{s}' is still running; stop it first or pass --force\n", .{ inst.service, inst.name });
             return;
         }
-        instances.signal(inst.pid, .KILL) catch |err| {
+        instances.signalGroup(inst.pid, .KILL) catch |err| {
             try out.print("failed to kill pid {d}: {s}\n", .{ inst.pid, @errorName(err) });
             return;
         };
+        // Wait briefly for the group to die so we don't deleteTree pgdata out from
+        // under a still-dying postgres. Bounded (~2s); proceed regardless afterward.
+        var waited: usize = 0;
+        while (waited < 20 and instances.alive(inst.pid)) : (waited += 1) {
+            std.Io.sleep(io, .fromMilliseconds(100), .awake) catch break;
+        }
     }
 
     try instances.remove(allocator, io, root, inst.service, inst.name);

@@ -75,11 +75,17 @@ pub fn stop(ctx: zli.CommandContext) !void {
 
     const inst = match.?;
     if (instances.alive(inst.pid)) {
-        const sig: std.posix.SIG = if (force) .KILL else .TERM;
-        instances.signal(inst.pid, sig) catch |err| {
-            try out.print("failed to signal pid {d}: {s}\n", .{ inst.pid, @errorName(err) });
-            return;
-        };
+        if (force) {
+            instances.signalGroup(inst.pid, .KILL) catch |err| {
+                try out.print("failed to signal pid {d}: {s}\n", .{ inst.pid, @errorName(err) });
+                return;
+            };
+        } else {
+            instances.signal(inst.pid, .TERM) catch |err| {
+                try out.print("failed to signal pid {d}: {s}\n", .{ inst.pid, @errorName(err) });
+                return;
+            };
+        }
         try out.print("stopped {s} instance '{s}' (pid {d})\n", .{ inst.service, inst.name, inst.pid });
     } else {
         try out.print("{s} instance '{s}' was not running\n", .{ inst.service, inst.name });

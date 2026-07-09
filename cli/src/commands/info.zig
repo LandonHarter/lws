@@ -85,10 +85,17 @@ fn info(ctx: zli.CommandContext) !void {
 
     const pid_u: u32 = @intCast(inst.pid);
 
+    const is_postgres = std.mem.eql(u8, inst.service, "postgres");
+
     if (as_json) {
+        var url_buf: [128]u8 = undefined;
+        const connection_url: []const u8 = if (is_postgres)
+            try std.fmt.bufPrint(&url_buf, "\"postgresql://postgres@127.0.0.1:{d}/postgres\"", .{inst.port})
+        else
+            "null";
         try out.print(
-            "{{\"service\":\"{s}\",\"name\":\"{s}\",\"pid\":{d},\"port\":{d},\"alive\":{s},\"stats\":{s}}}\n",
-            .{ inst.service, inst.name, pid_u, inst.port, if (running) "true" else "false", stats_body orelse "null" },
+            "{{\"service\":\"{s}\",\"name\":\"{s}\",\"pid\":{d},\"port\":{d},\"alive\":{s},\"stats\":{s},\"connection_url\":{s}}}\n",
+            .{ inst.service, inst.name, pid_u, inst.port, if (running) "true" else "false", stats_body orelse "null", connection_url },
         );
         return;
     }
@@ -97,6 +104,9 @@ fn info(ctx: zli.CommandContext) !void {
     try out.print("name      {s}\n", .{inst.name});
     try out.print("pid       {d}\n", .{pid_u});
     try out.print("port      {d}\n", .{inst.port});
+    if (is_postgres) {
+        try out.print("connect   postgresql://postgres@127.0.0.1:{d}/postgres\n", .{inst.port});
+    }
     try out.print("status    {s}\n", .{if (running) "running" else "dead"});
     if (running) {
         if (stats_body) |b| {

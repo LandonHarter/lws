@@ -155,3 +155,8 @@ pub fn alive(pid: std.posix.pid_t) bool {
 pub fn signal(pid: std.posix.pid_t, sig: std.posix.SIG) !void {
     try std.posix.kill(pid, sig);
 }
+
+pub fn signalGroup(pid: std.posix.pid_t, sig: std.posix.SIG) !void {
+    if (pid <= 0) return;
+    try std.posix.kill(-pid, sig);
+}

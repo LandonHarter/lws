@@ -139,6 +139,14 @@ const REGISTRY: Record<string, ServiceMeta> = {
     icon: Table,
     headline: dynamoHeadline,
   },
+  postgres: {
+    id: "postgres",
+    label: "Postgres",
+    title: "PostgreSQL",
+    blurb: "A real Postgres database, spun up locally.",
+    icon: Database,
+    headline: () => [],
+  },
 };
 
 export function serviceMeta(id: string): ServiceMeta {

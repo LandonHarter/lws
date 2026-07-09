@@ -99,6 +99,26 @@ fn run(ctx: zli.CommandContext) !void {
     defer allocator.free(resolved.path);
     const bin_path = resolved.path;
 
+    if (std.mem.eql(u8, spec.name, "postgres")) {
+        var check = try std.process.spawn(io, .{
+            .argv = &.{ bin_path, "--check-deps" },
+            .cwd = .inherit,
+            .stdin = .ignore,
+            .stdout = .inherit,
+            .stderr = .inherit,
+            .pgid = 0,
+        });
+        const st = try check.wait(io);
+        const ok = switch (st) {
+            .exited => |code| code == 0,
+            else => false,
+        };
+        if (!ok) {
+            try out.print("\ncannot start postgres until PostgreSQL is installed (see above).\n", .{});
+            return;
+        }
+    }
+
     try std.Io.Dir.createDirPath(.cwd(), io, data_dir);
 
     var effective_config: []const u8 = config_path;
@@ -141,6 +161,16 @@ fn run(ctx: zli.CommandContext) !void {
 
     try out.print("started {s} instance '{s}' (pid {d}) on port {d}\n", .{ spec.name, instance, pid, port });
     try out.print("logs: {s}\n", .{log_path});
+
+    if (std.mem.eql(u8, spec.name, "postgres")) {
+        try out.print(
+            \\
+            \\Connect with:
+            \\  URL   postgresql://postgres@127.0.0.1:{d}/postgres
+            \\  psql  psql "postgresql://postgres@127.0.0.1:{d}/postgres"
+            \\
+        , .{ port, port });
+    }
 }
 
 fn instanceAlive(allocator: std.mem.Allocator, io: std.Io, root: []const u8, service: []const u8, name: []const u8) !bool {
